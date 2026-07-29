@@ -212,7 +212,9 @@ test("builds fixed cross-platform npm install commands", () => {
   );
 });
 
-test("finds Homebrew npm-cli outside a background service PATH", (t) => {
+test("finds Homebrew npm-cli outside a background service PATH", {
+  skip: process.platform === "win32"
+}, (t) => {
   const prefix = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-npm-path-"));
   t.after(() => fs.rmSync(prefix, { recursive: true, force: true }));
   const nodeRoot = path.join(prefix, "Cellar", "node", "1.0.0");
@@ -245,7 +247,9 @@ test("prefers the npm CLI bundled beside node.exe on Windows", {
   }), fs.realpathSync.native(npmCliPath));
 });
 
-test("installs through an absolute npm CLI when PATH has no npm", async (t) => {
+test("installs through an absolute npm CLI when PATH has no npm", {
+  skip: process.platform === "win32"
+}, async (t) => {
   const prefix = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-npm-install-"));
   t.after(() => fs.rmSync(prefix, { recursive: true, force: true }));
   const packageRoot = path.join(prefix, "node_modules", "codex-weixin");

@@ -159,7 +159,7 @@ export function resolveCodexCommand(
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const existsSync = options.existsSync ?? fs.existsSync;
-  if (platform === "darwin" && codexBin === "codex" && !commandExistsOnPath(codexBin, env, existsSync)) {
+  if (platform === "darwin" && codexBin === "codex" && !commandExistsOnPath(codexBin, env, existsSync, platform)) {
     const bundledCli = resolveMacDesktopCodex(env, existsSync);
     if (bundledCli) {
       return { command: bundledCli, argsPrefix: [] };
@@ -185,12 +185,14 @@ export function resolveCodexCommand(
 function commandExistsOnPath(
   command: string,
   env: NodeJS.ProcessEnv,
-  existsSync: (target: string) => boolean
+  existsSync: (target: string) => boolean,
+  platform: NodeJS.Platform = process.platform
 ): boolean {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
   return (env.PATH ?? "")
-    .split(path.delimiter)
+    .split(pathApi.delimiter)
     .filter(Boolean)
-    .some((directory) => existsSync(path.join(directory, command)));
+    .some((directory) => existsSync(pathApi.join(directory, command)));
 }
 
 function resolveMacDesktopCodex(

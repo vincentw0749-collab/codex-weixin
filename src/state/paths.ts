@@ -12,6 +12,8 @@ export type StatePaths = {
   accountsDir: string;
   retainedAccountsPath: string;
   configPath: string;
+  apiProfilesPath: string;
+  codexHomeDir: string;
   statePath: string;
   inboundDir: string;
   logsDir: string;
@@ -24,6 +26,8 @@ export function resolveStatePaths(root = defaultStateDir()): StatePaths {
     accountsDir: path.join(root, "accounts"),
     retainedAccountsPath: path.join(root, "retained-accounts.json"),
     configPath: path.join(root, "config.json"),
+    apiProfilesPath: path.join(root, "api-profiles.json"),
+    codexHomeDir: path.join(root, "codex-home"),
     statePath: path.join(root, "state.json"),
     inboundDir: path.join(root, "inbound"),
     logsDir: path.join(root, "logs"),

@@ -19,3 +19,11 @@ test("isolates runtime state and inbound media by account", () => {
   assert.match(first.statePath, /runtime[/\\]bot-one[/\\]state\.json$/);
   assert.match(first.inboundDir, /inbound[/\\]bot-one$/);
 });
+
+test("resolves API profile and dedicated Codex home paths", () => {
+  const root = path.resolve("/tmp/codex-weixin-test");
+  const paths = resolveStatePaths(root);
+
+  assert.equal(paths.apiProfilesPath, path.join(root, "api-profiles.json"));
+  assert.equal(paths.codexHomeDir, path.join(root, "codex-home"));
+});
