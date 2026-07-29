@@ -614,7 +614,7 @@ async function saveApiProfile(event) {
       : await api("/api/api-profiles", { method: "POST", body });
     applyApiProfileState(saved);
     const profileId = saved.profile.id;
-    if (intent === "activate" || existing?.active) {
+    if (intent === "activate" || existing?.active || saved.profile.active) {
       setApiProfileBusy(profileId);
       applyApiProfileState(await api(`/api/api-profiles/${encodeURIComponent(profileId)}/activate`, { method: "POST" }));
       toast(`已保存并启用 ${body.name}`);
