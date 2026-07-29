@@ -9,10 +9,12 @@ import { promisify } from "node:util";
 import { z } from "zod";
 
 import { resolveCodexCommand } from "../codex/exec-runner.js";
+import { ApiProfileError } from "../state/api-profiles.js";
 import { loadConfig, saveConfig } from "../state/config.js";
 import type { StatePaths } from "../state/paths.js";
 import type { CodexModelOption, CodexRuntimeInfo } from "../codex/app-server-runner.js";
 import type { AccountManager, SessionAttachmentFile, SessionHistoryMessage, SessionUpload } from "./account-manager.js";
+import type { ApiProfileManager } from "./api-profile-manager.js";
 import { LoginManager } from "./login-manager.js";
 import { UpdateManager, type UpdateService } from "./update-manager.js";
 
@@ -38,6 +40,18 @@ const configSchema = z.object({
   effort: z.string().optional(),
   streamReplies: z.boolean().optional()
 });
+const apiProfileCreateSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  baseUrl: z.string().trim().min(1).max(2048),
+  apiKey: z.string().min(1).max(8192),
+  model: z.string().trim().min(1).max(200)
+});
+const apiProfileUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(60).optional(),
+  baseUrl: z.string().trim().min(1).max(2048).optional(),
+  apiKey: z.string().max(8192).optional(),
+  model: z.string().trim().min(1).max(200).optional()
+}).refine((value) => Object.keys(value).length > 0, "API profile update is empty");
 const MAX_WEB_UPLOAD_FILES = 10;
 const MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
 
@@ -47,6 +61,7 @@ const execFileAsync = promisify(execFile);
 export type LocalHttpServerOptions = {
   paths: StatePaths;
   accountManager: AccountManager;
+  apiProfileManager?: ApiProfileManager;
   loginManager?: LoginManager;
   productVersion?: string;
   port?: number;
@@ -82,7 +97,7 @@ export async function startLocalHttpServer(options: LocalHttpServerOptions): Pro
       port: actualPort
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      sendJson(response, errorStatus(message), { error: message });
+      sendJson(response, errorStatus(error), { error: message });
     });
   });
 
@@ -144,6 +159,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
       codex,
       codexRuntime,
       codexModels,
+      apiProfiles: context.apiProfileManager?.list() ?? [],
+      activeApiProfileId: context.apiProfileManager?.getActive()?.id,
       accounts: context.accountManager.listAccounts(),
       sessions: context.accountManager.listSessions()
     });
@@ -178,6 +195,45 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
   }
   if (method === "GET" && url.pathname === "/api/accounts") {
     sendJson(response, 200, { accounts: context.accountManager.listAccounts() });
+    return;
+  }
+  if (method === "GET" && url.pathname === "/api/api-profiles") {
+    sendJson(response, 200, apiProfileState(context));
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/api-profiles") {
+    const manager = requireApiProfileManager(context);
+    const body = apiProfileCreateSchema.parse(await readJsonBody(request));
+    sendJson(response, 201, { profile: await manager.create(body), ...apiProfileState(context) });
+    return;
+  }
+  const apiProfileAction = matchPath(url.pathname, "/api/api-profiles/:id/:action");
+  if (method === "POST" && apiProfileAction?.action === "test") {
+    sendJson(response, 200, await requireApiProfileManager(context).test(apiProfileAction.id));
+    return;
+  }
+  if (method === "POST" && apiProfileAction?.action === "activate") {
+    const manager = requireApiProfileManager(context);
+    await manager.activate(apiProfileAction.id);
+    sendJson(response, 200, {
+      ...apiProfileState(context),
+      config: loadConfig(context.paths),
+      codexRuntime: await readCodexRuntime(context),
+      codexModels: await readCodexModels(context)
+    });
+    return;
+  }
+  const apiProfileMatch = matchPath(url.pathname, "/api/api-profiles/:id");
+  if (method === "PATCH" && apiProfileMatch) {
+    const manager = requireApiProfileManager(context);
+    const body = apiProfileUpdateSchema.parse(await readJsonBody(request));
+    sendJson(response, 200, { profile: await manager.update(apiProfileMatch.id, body), ...apiProfileState(context) });
+    return;
+  }
+  if (method === "DELETE" && apiProfileMatch) {
+    const manager = requireApiProfileManager(context);
+    await manager.delete(apiProfileMatch.id);
+    sendJson(response, 200, { ok: true, ...apiProfileState(context) });
     return;
   }
   if (method === "GET" && url.pathname === "/api/sessions") {
@@ -438,7 +494,7 @@ function isAllowedHost(host: string | undefined, port: number): boolean {
 }
 
 function isAllowedOrigin(origin: string | undefined, port: number): boolean {
-  return !origin || origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
+  return origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
 }
 
 function isMutation(method: string): boolean {
@@ -542,11 +598,34 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function errorStatus(message: string): number {
+function errorStatus(error: unknown): number {
+  if (error instanceof ApiProfileError) {
+    if (error.code === "NOT_FOUND") return 404;
+    if (error.code === "CONFLICT") return 409;
+    if (error.code === "VALIDATION") return 400;
+    return 500;
+  }
+  const message = error instanceof Error ? error.message : String(error);
   if (/not found/i.test(message)) return 404;
   if (/already in progress|no newer/i.test(message)) return 409;
   if (/unable to verify|timed out/i.test(message)) return 503;
   return /required|invalid|allowed|empty|too large|too many|exceed/i.test(message) ? 400 : 500;
+}
+
+function requireApiProfileManager(context: HandlerContext): ApiProfileManager {
+  if (!context.apiProfileManager) throw new Error("API profile manager is unavailable");
+  return context.apiProfileManager;
+}
+
+function apiProfileState(context: HandlerContext): {
+  apiProfiles: ReturnType<ApiProfileManager["list"]>;
+  activeApiProfileId?: string;
+} {
+  const manager = requireApiProfileManager(context);
+  return {
+    apiProfiles: manager.list(),
+    activeApiProfileId: manager.getActive()?.id
+  };
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {

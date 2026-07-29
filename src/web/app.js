@@ -7,6 +7,11 @@ const state = {
   codex: null,
   codexRuntime: null,
   codexModels: [],
+  apiProfiles: [],
+  activeApiProfileId: "",
+  editingApiProfileId: "",
+  deletingApiProfileId: "",
+  apiProfileBusyId: "",
   loginPoll: null,
   selectedSessionKey: "",
   sessionMessages: [],
@@ -67,6 +72,13 @@ document.addEventListener("DOMContentLoaded", () => {
     updateNowButton: document.querySelector("#updateNowButton"),
     updateCheckButton: document.querySelector("#updateCheckButton"),
     settingsVersionValue: document.querySelector("#settingsVersionValue"),
+    apiProfilesList: document.querySelector("#apiProfilesList"),
+    apiProfileDialog: document.querySelector("#apiProfileDialog"),
+    apiProfileDeleteDialog: document.querySelector("#apiProfileDeleteDialog"),
+    apiProfileKeyInput: document.querySelector("#apiProfileKeyInput"),
+    toggleApiProfileKeyButton: document.querySelector("#toggleApiProfileKeyButton"),
+    saveApiProfileButton: document.querySelector("#saveApiProfileButton"),
+    saveActivateApiProfileButton: document.querySelector("#saveActivateApiProfileButton"),
     accountDialog: document.querySelector("#accountDialog"),
     removeAccountDialog: document.querySelector("#removeAccountDialog"),
     sessionDialog: document.querySelector("#sessionDialog")
@@ -83,6 +95,11 @@ function bindEvents() {
   document.querySelector("#refreshAccountsButton").addEventListener("click", () => void refreshData(true));
   document.querySelector("#newSessionButton").addEventListener("click", openNewSessionDialog);
   document.querySelector("#settingsForm").addEventListener("submit", (event) => void saveSettings(event));
+  document.querySelector("#addApiProfileButton").addEventListener("click", () => openApiProfileDialog());
+  document.querySelector("#apiProfileForm").addEventListener("submit", (event) => void saveApiProfile(event));
+  document.querySelector("#apiProfileDeleteForm").addEventListener("submit", (event) => void deleteApiProfile(event));
+  els.apiProfilesList.addEventListener("click", (event) => void handleApiProfileAction(event));
+  els.toggleApiProfileKeyButton.addEventListener("click", toggleApiProfileKeyVisibility);
   document.querySelector("#modelInput").addEventListener("change", () => renderEffortOptions(""));
   els.sessionModelInput.addEventListener("change", () => void handleSessionModelChange());
   els.sessionEffortInput.addEventListener("change", () => void saveSessionRuntimeSettings());
@@ -123,6 +140,8 @@ async function bootstrap() {
     state.codex = data.codex;
     state.codexRuntime = data.codexRuntime;
     state.codexModels = data.codexModels || [];
+    state.apiProfiles = data.apiProfiles || [];
+    state.activeApiProfileId = data.activeApiProfileId || "";
     renderAll();
     showView(location.hash.slice(1) || "accounts", false);
     window.setInterval(() => void refreshData(false), 5000);
@@ -478,6 +497,7 @@ function renderSessions() {
 
 function renderSettings() {
   if (!state.config) return;
+  renderApiProfiles();
   document.querySelector("#defaultCwdInput").value = state.config.defaultCwd || "";
   document.querySelector("#allowedWorkspacesInput").value = (state.config.allowedWorkspaces || []).join("\n");
   document.querySelector("#backendInput").value = state.config.codexBackend || "auto";
@@ -486,6 +506,173 @@ function renderSettings() {
   renderModelOptions();
   document.querySelector("#effectiveModelValue").textContent = state.codexRuntime?.model || state.config.model || "Codex 默认";
   document.querySelector("#effectiveEffortValue").textContent = state.codexRuntime?.effort || state.config.effort || "Codex 默认";
+}
+
+function renderApiProfiles() {
+  if (!state.apiProfiles.length) {
+    els.apiProfilesList.innerHTML = `<div class="api-profiles-empty"><i data-lucide="plug-zap"></i><span>尚未保存 API 连接</span></div>`;
+    drawIcons();
+    return;
+  }
+  els.apiProfilesList.innerHTML = state.apiProfiles.map((profile) => {
+    const active = profile.id === state.activeApiProfileId || profile.active;
+    const busy = state.apiProfileBusyId === profile.id;
+    const disabled = state.apiProfileBusyId ? "disabled" : "";
+    return `<article class="api-profile-row${active ? " is-active" : ""}" data-profile-id="${escapeAttr(profile.id)}">
+      <div class="api-profile-name" data-label="连接">
+        <span class="api-profile-status" aria-hidden="true"></span>
+        <span><strong>${escapeHtml(profile.name)}</strong><small>${active ? "当前使用" : "已保存"}</small></span>
+      </div>
+      <code class="api-profile-url" data-label="Base URL" title="${escapeAttr(profile.baseUrl)}">${escapeHtml(profile.baseUrl)}</code>
+      <code class="api-profile-model" data-label="模型" title="${escapeAttr(profile.model)}">${escapeHtml(profile.model)}</code>
+      <div class="api-profile-actions" data-label="操作">
+        <button class="icon-button${busy ? " is-loading" : ""}" type="button" data-api-profile-action="test" data-profile-id="${escapeAttr(profile.id)}" ${disabled} title="测试连接" aria-label="测试 ${escapeAttr(profile.name)}"><i data-lucide="${busy ? "loader-circle" : "activity"}"></i></button>
+        <button class="icon-button" type="button" data-api-profile-action="edit" data-profile-id="${escapeAttr(profile.id)}" ${disabled} title="编辑" aria-label="编辑 ${escapeAttr(profile.name)}"><i data-lucide="pencil"></i></button>
+        <button class="icon-button" type="button" data-api-profile-action="activate" data-profile-id="${escapeAttr(profile.id)}" ${disabled} title="${active ? "当前连接" : "启用"}" aria-label="启用 ${escapeAttr(profile.name)}"><i data-lucide="${active ? "check" : "power"}"></i></button>
+        <button class="icon-button is-danger" type="button" data-api-profile-action="delete" data-profile-id="${escapeAttr(profile.id)}" ${disabled || active || state.apiProfiles.length === 1 ? "disabled" : ""} title="删除" aria-label="删除 ${escapeAttr(profile.name)}"><i data-lucide="trash-2"></i></button>
+      </div>
+    </article>`;
+  }).join("");
+  drawIcons();
+}
+
+async function handleApiProfileAction(event) {
+  const button = event.target.closest("[data-api-profile-action]");
+  if (!button || button.disabled || state.apiProfileBusyId) return;
+  const profile = state.apiProfiles.find((item) => item.id === button.dataset.profileId);
+  if (!profile) return;
+  const action = button.dataset.apiProfileAction;
+  if (action === "edit") {
+    openApiProfileDialog(profile);
+    return;
+  }
+  if (action === "delete") {
+    openApiProfileDeleteDialog(profile);
+    return;
+  }
+  setApiProfileBusy(profile.id);
+  try {
+    if (action === "test") {
+      const result = await api(`/api/api-profiles/${encodeURIComponent(profile.id)}/test`, { method: "POST" });
+      toast(`连接正常 · ${result.latencyMs} ms`);
+      return;
+    }
+    if (action === "activate") {
+      applyApiProfileState(await api(`/api/api-profiles/${encodeURIComponent(profile.id)}/activate`, { method: "POST" }));
+      toast(`已切换到 ${profile.name}`);
+    }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setApiProfileBusy("");
+  }
+}
+
+function openApiProfileDialog(profile) {
+  state.editingApiProfileId = profile?.id || "";
+  document.querySelector("#apiProfileDialogTitle").textContent = profile ? "编辑 API 连接" : "添加 API 连接";
+  document.querySelector("#apiProfileNameInput").value = profile?.name || "";
+  document.querySelector("#apiProfileBaseUrlInput").value = profile?.baseUrl || "";
+  document.querySelector("#apiProfileModelInput").value = profile?.model || state.codexRuntime?.model || state.config?.model || "gpt-5.6-terra";
+  els.apiProfileKeyInput.value = "";
+  els.apiProfileKeyInput.required = !profile;
+  els.apiProfileKeyInput.type = "password";
+  updateApiProfileKeyToggle(false);
+  els.apiProfileDialog.showModal();
+  document.querySelector("#apiProfileNameInput").focus();
+}
+
+function toggleApiProfileKeyVisibility() {
+  const visible = els.apiProfileKeyInput.type === "password";
+  els.apiProfileKeyInput.type = visible ? "text" : "password";
+  updateApiProfileKeyToggle(visible);
+  els.apiProfileKeyInput.focus();
+}
+
+function updateApiProfileKeyToggle(visible) {
+  els.toggleApiProfileKeyButton.title = visible ? "隐藏密钥" : "显示密钥";
+  els.toggleApiProfileKeyButton.setAttribute("aria-label", visible ? "隐藏密钥" : "显示密钥");
+  els.toggleApiProfileKeyButton.innerHTML = `<i data-lucide="${visible ? "eye-off" : "eye"}"></i>`;
+  drawIcons();
+}
+
+async function saveApiProfile(event) {
+  event.preventDefault();
+  if (state.apiProfileBusyId) return;
+  const existing = state.apiProfiles.find((profile) => profile.id === state.editingApiProfileId);
+  const intent = event.submitter?.value || "save";
+  const body = {
+    name: document.querySelector("#apiProfileNameInput").value.trim(),
+    baseUrl: document.querySelector("#apiProfileBaseUrlInput").value.trim(),
+    apiKey: els.apiProfileKeyInput.value,
+    model: document.querySelector("#apiProfileModelInput").value.trim()
+  };
+  setApiProfileDialogBusy(true);
+  try {
+    const saved = existing
+      ? await api(`/api/api-profiles/${encodeURIComponent(existing.id)}`, { method: "PATCH", body })
+      : await api("/api/api-profiles", { method: "POST", body });
+    applyApiProfileState(saved);
+    const profileId = saved.profile.id;
+    if (intent === "activate" || existing?.active) {
+      setApiProfileBusy(profileId);
+      applyApiProfileState(await api(`/api/api-profiles/${encodeURIComponent(profileId)}/activate`, { method: "POST" }));
+      toast(`已保存并启用 ${body.name}`);
+    } else {
+      toast(`已保存 ${body.name}`);
+    }
+    els.apiProfileDialog.close();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setApiProfileBusy("");
+    setApiProfileDialogBusy(false);
+  }
+}
+
+function openApiProfileDeleteDialog(profile) {
+  state.deletingApiProfileId = profile.id;
+  document.querySelector("#apiProfileDeleteName").textContent = profile.name;
+  els.apiProfileDeleteDialog.showModal();
+}
+
+async function deleteApiProfile(event) {
+  event.preventDefault();
+  const profile = state.apiProfiles.find((item) => item.id === state.deletingApiProfileId);
+  if (!profile || state.apiProfileBusyId) return;
+  const button = document.querySelector("#confirmDeleteApiProfileButton");
+  button.disabled = true;
+  setApiProfileBusy(profile.id);
+  try {
+    applyApiProfileState(await api(`/api/api-profiles/${encodeURIComponent(profile.id)}`, { method: "DELETE" }));
+    els.apiProfileDeleteDialog.close();
+    toast(`已删除 ${profile.name}`);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    setApiProfileBusy("");
+  }
+}
+
+function applyApiProfileState(result) {
+  if (Array.isArray(result.apiProfiles)) state.apiProfiles = result.apiProfiles;
+  if (result.activeApiProfileId !== undefined) state.activeApiProfileId = result.activeApiProfileId || "";
+  if (result.config) state.config = result.config;
+  if (result.codexRuntime) state.codexRuntime = result.codexRuntime;
+  if (result.codexModels) state.codexModels = result.codexModels;
+  renderSettings();
+}
+
+function setApiProfileBusy(profileId) {
+  state.apiProfileBusyId = profileId;
+  renderApiProfiles();
+}
+
+function setApiProfileDialogBusy(busy) {
+  els.saveApiProfileButton.disabled = busy;
+  els.saveActivateApiProfileButton.disabled = busy;
+  els.toggleApiProfileKeyButton.disabled = busy;
 }
 
 function renderModelOptions() {

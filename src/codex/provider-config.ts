@@ -11,6 +11,20 @@ export type ProviderConfigOptions = {
   trustedWorkspace?: string;
 };
 
+export function readProviderConfigOptions(configPath: string): ProviderConfigOptions {
+  const source = readOptionalFile(configPath);
+  const project = source.match(/^\s*\[projects\.(["'])(.*?)\1\]\s*$/m)?.[2];
+  return {
+    ...(readTomlString(source, "model_instructions_file")
+      ? { instructionsFile: readTomlString(source, "model_instructions_file") }
+      : {}),
+    ...(readTomlString(source, "model_reasoning_effort")
+      ? { reasoningEffort: readTomlString(source, "model_reasoning_effort") }
+      : {}),
+    ...(project ? { trustedWorkspace: project } : {})
+  };
+}
+
 export function renderProviderConfig(
   profile: Pick<ApiProfileSummary, "name" | "baseUrl" | "model">,
   options: ProviderConfigOptions = {}

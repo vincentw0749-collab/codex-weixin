@@ -273,6 +273,15 @@ export class AccountManager {
     }
   }
 
+  async verifyCodexRuntime(expectedModel: string): Promise<CodexRuntimeInfo> {
+    const config = this.configProvider();
+    const runtime = await this.runnerFor(config).getRuntimeInfo(config.defaultCwd);
+    if (runtime.model !== expectedModel) {
+      throw new Error("Codex runtime model does not match the active API profile");
+    }
+    return runtime;
+  }
+
   async getCodexModels(): Promise<CodexModelOption[]> {
     let models: CodexModelOption[] = [];
     try {

@@ -147,6 +147,19 @@
         </div>
       </div>
       <form id="settingsForm" class="settings-form">
+        <div class="settings-group api-connections-group">
+          <div class="settings-group-heading">
+            <h2>API 连接</h2>
+            <button class="button button-secondary" id="addApiProfileButton" type="button">
+              <i data-lucide="plus"></i>
+              <span>添加</span>
+            </button>
+          </div>
+          <div class="api-profiles-shell">
+            <div class="api-profiles-list" id="apiProfilesList" aria-live="polite"></div>
+            <p class="api-profiles-protocol"><i data-lucide="shield-check"></i><span>密钥由 Windows 当前用户加密保存 · 使用 Responses API</span></p>
+          </div>
+        </div>
         <div class="settings-group">
           <h2>工作区</h2>
           <label>
@@ -223,6 +236,78 @@
       </form>
     </section>
   </main>
+
+  <dialog class="modal api-profile-modal" id="apiProfileDialog" aria-labelledby="apiProfileDialogTitle">
+    <form id="apiProfileForm" method="dialog">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">API CONNECTION</p>
+          <h2 id="apiProfileDialogTitle">添加 API 连接</h2>
+        </div>
+        <button class="icon-button" type="button" data-close-dialog="apiProfileDialog" title="关闭" aria-label="关闭 API 连接窗口">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body form-stack">
+        <label>
+          <span>连接名称</span>
+          <input id="apiProfileNameInput" maxlength="60" autocomplete="off" required placeholder="例如：主线路">
+        </label>
+        <label>
+          <span>Base URL</span>
+          <input id="apiProfileBaseUrlInput" type="url" maxlength="2048" autocomplete="url" required placeholder="https://api.example.com/v1">
+        </label>
+        <label>
+          <span>API Key</span>
+          <span class="password-field">
+            <input id="apiProfileKeyInput" type="password" maxlength="8192" autocomplete="new-password" placeholder="编辑时留空则保持不变">
+            <button class="icon-button" id="toggleApiProfileKeyButton" type="button" title="显示密钥" aria-label="显示密钥">
+              <i data-lucide="eye"></i>
+            </button>
+          </span>
+        </label>
+        <label>
+          <span>默认模型</span>
+          <input id="apiProfileModelInput" maxlength="200" autocomplete="off" required placeholder="gpt-5.6-terra">
+        </label>
+      </div>
+      <div class="modal-footer api-profile-footer">
+        <button class="button button-secondary" type="button" data-close-dialog="apiProfileDialog">取消</button>
+        <button class="button button-secondary" id="saveApiProfileButton" type="submit" value="save">
+          <i data-lucide="save"></i>
+          <span>保存</span>
+        </button>
+        <button class="button button-primary" id="saveActivateApiProfileButton" type="submit" value="activate">
+          <i data-lucide="power"></i>
+          <span>保存并启用</span>
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="modal api-profile-delete-modal" id="apiProfileDeleteDialog" aria-labelledby="apiProfileDeleteTitle">
+    <form id="apiProfileDeleteForm" method="dialog">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">REMOVE CONNECTION</p>
+          <h2 id="apiProfileDeleteTitle">删除 API 连接</h2>
+        </div>
+        <button class="icon-button" type="button" data-close-dialog="apiProfileDeleteDialog" title="关闭" aria-label="关闭删除窗口">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="api-profile-delete-copy">确定删除 <strong id="apiProfileDeleteName"></strong>？此操作不会影响其他连接。</p>
+      </div>
+      <div class="modal-footer">
+        <button class="button button-secondary" type="button" data-close-dialog="apiProfileDeleteDialog">取消</button>
+        <button class="button button-danger" id="confirmDeleteApiProfileButton" type="submit">
+          <i data-lucide="trash-2"></i>
+          <span>删除</span>
+        </button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog class="modal update-modal" id="updateDialog" aria-labelledby="updateDialogTitle">
     <div class="modal-header update-modal-header">

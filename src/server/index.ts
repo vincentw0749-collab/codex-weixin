@@ -5,6 +5,7 @@ import open from "open";
 
 import { resolveStatePaths } from "../state/paths.js";
 import { AccountManager } from "./account-manager.js";
+import { initializeApiProfiles } from "./api-profile-bootstrap.js";
 import { parseServerCommand, serverHelpText } from "./arguments.js";
 import { startLocalHttpServer } from "./http-server.js";
 import { acquireServiceProcessLock } from "./process-lock.js";
@@ -51,7 +52,18 @@ async function main(): Promise<void> {
     timer.unref();
   };
   try {
-    server = await startLocalHttpServer({ paths, accountManager, port, onUpdateInstalled: scheduleRestart });
+    const apiProfileManager = await initializeApiProfiles({
+      paths,
+      accountManager,
+      wrapperPath: fileURLToPath(new URL("../../scripts/codex-weixin-codex.mjs", import.meta.url))
+    });
+    server = await startLocalHttpServer({
+      paths,
+      accountManager,
+      apiProfileManager,
+      port,
+      onUpdateInstalled: scheduleRestart
+    });
     await accountManager.startAll();
   } catch (error) {
     await accountManager.stopAll();
