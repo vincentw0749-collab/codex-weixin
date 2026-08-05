@@ -94,6 +94,23 @@ test("persists model and reasoning effort overrides per managed session", (t) =>
   assert.equal(reloaded.getActiveSession("alice@im.wechat")?.effort, undefined);
 });
 
+test("clears model and effort overrides across sessions when API defaults change", (t) => {
+  const store = createStore(t);
+  const first = store.createSession("alice@im.wechat", "/work/one", "First");
+  store.setModelOverride("alice@im.wechat", "gpt-old");
+  store.setEffortOverride("alice@im.wechat", "high");
+  const second = store.createSession("bob@im.wechat", "/work/two", "Second");
+  store.setModelOverride("bob@im.wechat", "gpt-other");
+  store.setEffortOverride("bob@im.wechat", "xhigh");
+
+  store.clearModelAndEffortOverrides();
+
+  assert.equal(store.getSession(first.id)?.model, undefined);
+  assert.equal(store.getSession(first.id)?.effort, undefined);
+  assert.equal(store.getSession(second.id)?.model, undefined);
+  assert.equal(store.getSession(second.id)?.effort, undefined);
+});
+
 test("updates model, effort, and streaming by managed session id for Web controls", (t) => {
   const store = createStore(t);
   const first = store.createSession("alice@im.wechat", "/work/one", "First");

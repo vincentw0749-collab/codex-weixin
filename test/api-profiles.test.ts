@@ -26,7 +26,7 @@ function fixture(t: test.TestContext) {
   return { paths, store: new ApiProfileStore(paths, new FakeProtector()) };
 }
 
-test("creates normalized profiles and redacts all secret material", async (t) => {
+test("creates normalized inactive profiles and redacts all secret material", async (t) => {
   const { paths, store } = fixture(t);
   const created = await store.create({
     name: "  Primary  ",
@@ -38,8 +38,13 @@ test("creates normalized profiles and redacts all secret material", async (t) =>
   assert.equal(created.name, "Primary");
   assert.equal(created.baseUrl, "https://api.example/v1");
   assert.equal(created.model, "gpt-5.6-terra");
+  assert.equal(created.effort, "medium");
   assert.equal(created.hasApiKey, true);
-  assert.equal(created.active, true);
+  assert.equal(created.active, false);
+  assert.equal(store.getActive(), undefined);
+  const active = await store.activate(created.id);
+  assert.equal(active.active, true);
+  assert.equal(store.getActive()?.id, created.id);
   assert.equal(await store.readSecret(created.id), "sk-private");
   assert.doesNotMatch(JSON.stringify(store.list()), /sk-private|cipher:/);
   const persisted = fs.readFileSync(paths.apiProfilesPath, "utf8");
@@ -78,19 +83,36 @@ test("edits metadata while a blank key preserves the encrypted key", async (t) =
   const created = await store.create({ name: "Primary", baseUrl: "https://api.example/v1", apiKey: "first-key", model: "old-model" });
   const before = JSON.parse(fs.readFileSync(paths.apiProfilesPath, "utf8")).profiles[0].encryptedApiKey;
 
-  const updated = await store.update(created.id, { name: "Updated", model: "new-model", apiKey: "" });
+  const updated = await store.update(created.id, { name: "Updated", model: "new-model", effort: "max", apiKey: "" });
   const after = JSON.parse(fs.readFileSync(paths.apiProfilesPath, "utf8")).profiles[0].encryptedApiKey;
 
   assert.equal(updated.name, "Updated");
   assert.equal(updated.model, "new-model");
+  assert.equal(updated.effort, "max");
   assert.equal(before, after);
   assert.equal(await store.readSecret(created.id), "first-key");
+});
+
+test("rejects unsupported API profile reasoning effort", async (t) => {
+  const { store } = fixture(t);
+
+  await assert.rejects(
+    store.create({
+      name: "Invalid effort",
+      baseUrl: "https://api.example/v1",
+      apiKey: "key",
+      model: "model",
+      effort: "extreme"
+    }),
+    /Reasoning effort/i
+  );
 });
 
 test("activates profiles and guards active or final profile deletion", async (t) => {
   const { store } = fixture(t);
   const first = await store.create({ name: "Primary", baseUrl: "https://one.test/v1", apiKey: "one", model: "one-model" });
   const second = await store.create({ name: "Backup", baseUrl: "https://two.test/v1", apiKey: "two", model: "two-model" });
+  await store.activate(first.id);
 
   await assert.rejects(store.delete(first.id), /active profile/i);
   await store.activate(second.id);

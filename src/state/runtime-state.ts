@@ -171,6 +171,19 @@ export class RuntimeStateStore {
     this.save();
   }
 
+  clearModelAndEffortOverrides(): void {
+    let changed = false;
+    const now = new Date().toISOString();
+    for (const session of this.state.sessions) {
+      if (session.model === undefined && session.effort === undefined) continue;
+      delete session.model;
+      delete session.effort;
+      session.updatedAt = now;
+      changed = true;
+    }
+    if (changed) this.save();
+  }
+
   setStreamRepliesOverride(senderId: string, streamReplies?: boolean): void {
     const session = this.mutableActiveSession(senderId);
     if (!session) {

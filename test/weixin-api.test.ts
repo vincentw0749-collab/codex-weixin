@@ -34,6 +34,22 @@ test("builds authenticated sendmessage requests with context token", async () =>
   assert.deepEqual(body.base_info, { channel_version: "0.1.0" });
 });
 
+test("applies a deadline to a stalled outbound WeChat request", { timeout: 1_000 }, async () => {
+  const client = new WeixinApiClient({
+    baseUrl: "https://ilink.example/",
+    token: "secret",
+    requestTimeoutMs: 20,
+    fetch: async (_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    })
+  });
+
+  await assert.rejects(
+    client.sendText({ toUserId: "alice@im.wechat", text: "hello" }),
+    /timeout/i
+  );
+});
+
 test("classifies ret=-2 sendmessage failures as stale context", async () => {
   const client = new WeixinApiClient({
     baseUrl: "https://ilink.example/",

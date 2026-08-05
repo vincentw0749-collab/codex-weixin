@@ -188,6 +188,20 @@ test("stops the active codex exec fallback process", async (t) => {
   await assert.rejects(run, /exited with code/i);
 });
 
+test("does not set a default timeout for exec turns", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const runner = new CodexExecRunner({
+    codexBin: path.join(fixturesDir, "fake-codex-fallback.mjs")
+  });
+  t.after(() => runner.close());
+
+  const run = runner.run({ prompt: "unbounded", cwd: fixturesDir });
+  t.mock.timers.tick(600_000);
+  const result = await run;
+
+  assert.equal(result.text, "exec-new");
+});
+
 test("does not misreport completed exec messages as token deltas", async (t) => {
   const deltas: string[] = [];
   const runner = new CodexExecRunner({

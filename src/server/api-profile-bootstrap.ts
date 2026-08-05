@@ -21,6 +21,7 @@ export async function initializeApiProfiles(options: {
   globalCodexHome?: string;
   env?: NodeJS.ProcessEnv;
   fetch?: typeof globalThis.fetch;
+  browserMcpUrl?: string;
 }): Promise<ApiProfileManager> {
   const globalCodexHome = options.globalCodexHome ?? path.join(os.homedir(), ".codex");
   const dedicatedConfigPath = path.join(options.paths.codexHomeDir, "config.toml");
@@ -34,30 +35,50 @@ export async function initializeApiProfiles(options: {
 
   const providerOptions = () => {
     const config = loadConfig(options.paths);
+    const packageRoot = path.resolve(path.dirname(options.wrapperPath), "..");
     return {
       ...existingProviderOptions,
+      instructionsFile: path.join(packageRoot, "resources", "codex-weixin-instructions.md"),
       reasoningEffort: config.effort ?? existingProviderOptions.reasoningEffort ?? "medium",
-      trustedWorkspace: config.defaultCwd
+      trustedWorkspace: config.defaultCwd,
+      mcpServers: {
+        playwright: {
+          url: options.browserMcpUrl ?? "http://localhost:8788/mcp",
+          startupTimeoutSec: 60,
+          toolTimeoutSec: 120,
+          defaultToolsApprovalMode: "approve" as const,
+          required: true
+        }
+      }
     };
   };
   const active = store.getActive();
   if (active) {
-    writeProviderConfig(options.paths, active, providerOptions());
     const config = loadConfig(options.paths);
     saveConfig(options.paths, {
       ...config,
       codexBin: path.resolve(options.wrapperPath),
-      model: active.model
+      model: active.model,
+      effort: active.effort
+    });
+    writeProviderConfig(options.paths, active, {
+      ...providerOptions(),
+      reasoningEffort: active.effort
     });
   }
 
   return new ApiProfileManager({
     store,
     fetch: options.fetch,
-    writeProviderConfig: (profile) => writeProviderConfig(options.paths, profile, providerOptions()),
+    writeProviderConfig: (profile) => writeProviderConfig(options.paths, profile, {
+      ...providerOptions(),
+      reasoningEffort: profile.effort
+    }),
     loadConfig: () => loadConfig(options.paths),
     saveConfig: (config) => saveConfig(options.paths, config),
-    restartRuntime: () => options.accountManager.restartRunning(),
+    restartRuntime: (prepare, runtimeOptions) => options.accountManager.restartRunning(prepare, runtimeOptions),
+    resetSessionRuntimeOverrides: () => options.accountManager.clearSessionRuntimeOverrides(),
+    getActiveTaskCount: () => options.accountManager.getActiveTaskCount(),
     readRuntime: async () => {
       const model = store.getActive()?.model;
       if (!model) throw new Error("No active API profile is configured");

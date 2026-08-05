@@ -6,6 +6,10 @@ import { resolveCodexCommand, type CodexRunResult } from "./exec-runner.js";
 export type AppServerRunnerOptions = {
   codexBin?: string;
   requestTimeoutMs?: number;
+  interruptTimeoutMs?: number;
+  turnStallTimeoutMs?: number;
+  turnProbeTimeoutMs?: number;
+  streamCallbackTimeoutMs?: number;
 };
 
 export type CodexRunnerInput = {
@@ -14,6 +18,7 @@ export type CodexRunnerInput = {
   threadId?: string;
   model?: string;
   effort?: string;
+  onThreadStarted?: (threadId: string) => Promise<void> | void;
   onDelta?: (delta: string) => Promise<void> | void;
   onProgress?: (message: string) => Promise<void> | void;
 };
@@ -50,7 +55,7 @@ type PendingRequest = {
   method: string;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timer: NodeJS.Timeout;
+  timer?: NodeJS.Timeout;
 };
 
 type TurnCompletion = {
@@ -63,13 +68,23 @@ type TurnCompletion = {
 type TurnWaiter = {
   resolve: (value: CodexRunResult) => void;
   reject: (error: Error) => void;
-  timer: NodeJS.Timeout;
 };
 
 type TurnStream = {
   onDelta?: (delta: string) => Promise<void> | void;
   onProgress?: (message: string) => Promise<void> | void;
   chain: Promise<void>;
+  progressChain: Promise<void>;
+  progressActive: boolean;
+  closed: boolean;
+};
+
+type TurnProbe = {
+  threadId: string;
+  turnId: string;
+  lastActivityAt: number;
+  probing: boolean;
+  timer?: NodeJS.Timeout;
 };
 
 type QueuedTurnEvent = {
@@ -104,6 +119,7 @@ export class AppServerCodexRunner {
   private readonly turnTexts = new Map<string, string>();
   private readonly completedTurns = new Map<string, TurnCompletion>();
   private readonly turnStreams = new Map<string, TurnStream>();
+  private readonly turnProbes = new Map<string, TurnProbe>();
   private readonly queuedTurnEvents = new Map<string, QueuedTurnEvent[]>();
   private readonly itemPhasesByTurn = new Map<string, Map<string, string>>();
   private readonly runtimeInfoByThread = new Map<string, CodexRuntimeInfo>();
@@ -129,6 +145,7 @@ export class AppServerCodexRunner {
       throw new Error("Codex app-server did not return a thread id");
     }
     this.runtimeInfoByThread.set(threadId, runtimeInfoFromThreadResponse(threadResponse));
+    await input.onThreadStarted?.(threadId);
 
     const turnResponse = await this.request("turn/start", compactObject({
       threadId,
@@ -145,12 +162,16 @@ export class AppServerCodexRunner {
     }
 
     this.activeTurns.set(threadId, turnId);
+    this.beginTurnProbe(threadId, turnId);
     if (input.onDelta || input.onProgress) {
       const key = turnKey(threadId, turnId);
       this.turnStreams.set(key, {
         onDelta: input.onDelta,
         onProgress: input.onProgress,
-        chain: Promise.resolve()
+        chain: Promise.resolve(),
+        progressChain: Promise.resolve(),
+        progressActive: false,
+        closed: false
       });
       for (const event of this.queuedTurnEvents.get(key) ?? []) {
         this.enqueueTurnEvent(key, event);
@@ -234,7 +255,7 @@ export class AppServerCodexRunner {
       return;
     }
 
-    await this.request("turn/interrupt", target);
+    await this.request("turn/interrupt", target, this.interruptTimeoutMs());
   }
 
   close(): void {
@@ -292,7 +313,7 @@ export class AppServerCodexRunner {
           experimentalApi: false,
           requestAttestation: false
         }
-      }, Math.min(this.options.requestTimeoutMs ?? 600_000, 15_000));
+      }, 15_000);
       this.notify("initialized", {});
       this.initialized = true;
     } catch (error) {
@@ -304,11 +325,11 @@ export class AppServerCodexRunner {
   private request(
     method: string,
     params: Record<string, unknown>,
-    timeoutMs = this.options.requestTimeoutMs ?? 600_000
+    timeoutMs = this.options.requestTimeoutMs
   ): Promise<unknown> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
         const error = new Error(`app-server request ${method} timed out after ${timeoutMs}ms`);
         this.pending.delete(id);
         reject(error);
@@ -371,6 +392,10 @@ export class AppServerCodexRunner {
   }
 
   private handleNotification(method: string, params: Record<string, unknown>, raw: string): void {
+    const activityKey = turnKeyFromParams(params);
+    if (activityKey) {
+      this.touchTurnProbe(activityKey);
+    }
     if (method === "item/started") {
       const key = turnKeyFromParams(params);
       const item = params.item as Record<string, unknown> | undefined;
@@ -437,21 +462,12 @@ export class AppServerCodexRunner {
     this.appendTurnEvent(key, raw);
     const status = typeof turn?.status === "string" ? turn.status : "completed";
     const errorValue = turn?.error as Record<string, unknown> | undefined;
-    const completion: TurnCompletion = {
+    this.settleTurn(threadId, turnId, key, {
       status,
       text: this.turnTexts.get(key) ?? extractAgentMessageFromTurn(turn),
       raw: (this.turnEvents.get(key) ?? []).join("\n"),
       error: typeof errorValue?.message === "string" ? errorValue.message : undefined
-    };
-    this.activeTurns.delete(threadId);
-    const waiter = this.turnWaiters.get(key);
-    if (!waiter) {
-      this.completedTurns.set(key, completion);
-      return;
-    }
-    this.turnWaiters.delete(key);
-    clearTimeout(waiter.timer);
-    void this.finishTurn(threadId, key, completion, waiter.resolve, waiter.reject);
+    });
   }
 
   private waitForTurn(threadId: string, turnId: string): Promise<CodexRunResult> {
@@ -464,15 +480,8 @@ export class AppServerCodexRunner {
       });
     }
 
-    const timeoutMs = this.options.requestTimeoutMs ?? 600_000;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.turnWaiters.delete(key);
-        const error = new Error(`app-server turn timed out after ${timeoutMs}ms`);
-        reject(error);
-        this.failTransport(error, true);
-      }, timeoutMs);
-      this.turnWaiters.set(key, { resolve, reject, timer });
+      this.turnWaiters.set(key, { resolve, reject });
     });
   }
 
@@ -485,7 +494,11 @@ export class AppServerCodexRunner {
   ): Promise<void> {
     const stream = this.turnStreams.get(key);
     this.turnStreams.delete(key);
-    await stream?.chain;
+    if (stream) {
+      stream.closed = true;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await stream.chain;
+    }
     this.turnEvents.delete(key);
     this.turnTexts.delete(key);
     this.queuedTurnEvents.delete(key);
@@ -518,8 +531,32 @@ export class AppServerCodexRunner {
     if (!stream) return;
     const callback = event.type === "progress" ? stream.onProgress : stream.onDelta;
     if (!callback) return;
+    if (event.type === "progress") {
+      if (!stream.progressActive) {
+        stream.progressActive = true;
+        stream.progressChain = this.runStreamCallback(callback, event)
+          .catch((error) => {
+            console.warn(`Codex ${event.type} callback failed: ${error instanceof Error ? error.message : String(error)}`);
+          })
+          .finally(() => {
+            stream.progressActive = false;
+          });
+        return;
+      }
+      stream.progressChain = stream.progressChain
+        .then(() => {
+          if (stream.closed) return;
+          return this.runStreamCallback(callback, event);
+        })
+        .catch((error) => {
+          console.warn(`Codex ${event.type} callback failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      return;
+    }
     stream.chain = stream.chain
-      .then(() => callback(event.text))
+      .then(() => {
+        return this.runStreamCallback(callback, event);
+      })
       .then(() => undefined)
       .catch((error) => {
         console.warn(`Codex ${event.type} callback failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -531,11 +568,11 @@ export class AppServerCodexRunner {
     switch (message.method) {
       case "item/commandExecution/requestApproval":
       case "item/fileChange/requestApproval":
-        this.send({ id, result: { decision: "decline" } });
+        this.send({ id, result: { decision: "acceptForSession" } });
         return;
       case "execCommandApproval":
       case "applyPatchApproval":
-        this.send({ id, result: { decision: "denied" } });
+        this.send({ id, result: { decision: "approved" } });
         return;
       case "item/tool/requestUserInput":
         this.send({ id, result: { answers: {} } });
@@ -544,7 +581,13 @@ export class AppServerCodexRunner {
         this.send({ id, result: { action: "cancel", content: null, _meta: null } });
         return;
       case "item/permissions/requestApproval":
-        this.send({ id, result: { permissions: {}, scope: "turn" } });
+        this.send({
+          id,
+          result: {
+            permissions: isRecord(message.params?.permissions) ? message.params.permissions : {},
+            scope: "session"
+          }
+        });
         return;
       case "item/tool/call":
         this.send({
@@ -589,7 +632,6 @@ export class AppServerCodexRunner {
     }
     for (const [key, waiter] of this.turnWaiters.entries()) {
       this.turnWaiters.delete(key);
-      clearTimeout(waiter.timer);
       waiter.reject(error);
     }
     this.activeTurns.clear();
@@ -597,10 +639,159 @@ export class AppServerCodexRunner {
     this.turnTexts.clear();
     this.completedTurns.clear();
     this.turnStreams.clear();
+    this.clearTurnProbes();
     this.queuedTurnEvents.clear();
     this.itemPhasesByTurn.clear();
     this.runtimeInfoByThread.clear();
     this.modelOptions = undefined;
+  }
+
+  private settleTurn(threadId: string, turnId: string, key: string, completion: TurnCompletion): void {
+    this.activeTurns.delete(threadId);
+    this.clearTurnProbe(key);
+    const waiter = this.turnWaiters.get(key);
+    if (!waiter) {
+      this.completedTurns.set(key, completion);
+      return;
+    }
+    this.turnWaiters.delete(key);
+    void this.finishTurn(threadId, key, completion, waiter.resolve, waiter.reject);
+  }
+
+  private beginTurnProbe(threadId: string, turnId: string): void {
+    const timeoutMs = this.turnStallTimeoutMs();
+    if (!timeoutMs) return;
+    const key = turnKey(threadId, turnId);
+    this.turnProbes.set(key, {
+      threadId,
+      turnId,
+      lastActivityAt: Date.now(),
+      probing: false
+    });
+    this.scheduleTurnProbe(key);
+  }
+
+  private touchTurnProbe(key: string): void {
+    const probe = this.turnProbes.get(key);
+    if (!probe) return;
+    probe.lastActivityAt = Date.now();
+    if (!probe.probing) {
+      this.scheduleTurnProbe(key);
+    }
+  }
+
+  private scheduleTurnProbe(key: string): void {
+    const probe = this.turnProbes.get(key);
+    const timeoutMs = this.turnStallTimeoutMs();
+    if (!probe || !timeoutMs) return;
+    clearTimeout(probe.timer);
+    const delayMs = Math.max(1, timeoutMs - (Date.now() - probe.lastActivityAt));
+    probe.timer = setTimeout(() => {
+      void this.probeTurn(key);
+    }, delayMs);
+    probe.timer.unref();
+  }
+
+  private async probeTurn(key: string): Promise<void> {
+    const probe = this.turnProbes.get(key);
+    const timeoutMs = this.turnStallTimeoutMs();
+    if (!probe || !timeoutMs || probe.probing) return;
+    if (Date.now() - probe.lastActivityAt < timeoutMs) {
+      this.scheduleTurnProbe(key);
+      return;
+    }
+
+    probe.probing = true;
+    try {
+      const response = await this.request("thread/read", {
+        threadId: probe.threadId,
+        includeTurns: true
+      }, this.options.turnProbeTimeoutMs ?? 15_000) as Record<string, unknown>;
+      const thread = response.thread as Record<string, unknown> | undefined;
+      const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+      const turn = turns.find((candidate) => {
+        const value = candidate as Record<string, unknown>;
+        return value?.id === probe.turnId;
+      }) as Record<string, unknown> | undefined;
+      if (!turn) {
+        throw new Error("app-server did not report the active turn during a stall probe");
+      }
+      const status = typeof turn.status === "string" ? turn.status : "";
+      if (status === "inProgress" || status === "pending" || status === "queued") {
+        probe.lastActivityAt = Date.now();
+        return;
+      }
+      if (status !== "completed" && status !== "interrupted" && status !== "failed" && status !== "error") {
+        throw new Error(`app-server returned an unknown active turn status: ${status || "missing"}`);
+      }
+      const errorValue = turn.error as Record<string, unknown> | undefined;
+      this.settleTurn(probe.threadId, probe.turnId, key, {
+        status,
+        text: this.turnTexts.get(key) ?? extractAgentMessageFromTurn(turn),
+        raw: (this.turnEvents.get(key) ?? []).join("\n"),
+        error: typeof errorValue?.message === "string" ? errorValue.message : undefined
+      });
+    } catch (error) {
+      if (this.turnProbes.has(key)) {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.failTransport(new Error(`app-server turn stream became unresponsive: ${detail}`), true);
+      }
+    } finally {
+      const current = this.turnProbes.get(key);
+      if (current) {
+        current.probing = false;
+        this.scheduleTurnProbe(key);
+      }
+    }
+  }
+
+  private clearTurnProbe(key: string): void {
+    const probe = this.turnProbes.get(key);
+    if (probe) {
+      clearTimeout(probe.timer);
+      this.turnProbes.delete(key);
+    }
+  }
+
+  private clearTurnProbes(): void {
+    for (const probe of this.turnProbes.values()) {
+      clearTimeout(probe.timer);
+    }
+    this.turnProbes.clear();
+  }
+
+  private interruptTimeoutMs(): number {
+    const timeoutMs = this.options.interruptTimeoutMs ?? 5_000;
+    return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5_000;
+  }
+
+  private turnStallTimeoutMs(): number | undefined {
+    const timeoutMs = this.options.turnStallTimeoutMs ?? 90_000;
+    return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined;
+  }
+
+  private async runStreamCallback(
+    callback: (text: string) => Promise<void> | void,
+    event: QueuedTurnEvent
+  ): Promise<void> {
+    const timeoutMs = this.options.streamCallbackTimeoutMs ?? 30_000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      await callback(event.text);
+      return;
+    }
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const callbackResult = callback(event.text);
+      await Promise.race([
+        Promise.resolve(callbackResult),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Codex ${event.type} callback timed out after ${timeoutMs}ms`)), timeoutMs);
+          timer.unref();
+        })
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -657,6 +848,10 @@ function compactRuntimeInfo(input: { model?: unknown; effort?: unknown; provider
 
 function compactObject(input: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function turnKey(threadId: string, turnId: string): string {

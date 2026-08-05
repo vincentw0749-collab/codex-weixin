@@ -24,13 +24,14 @@ test("API profile routes are authenticated, redacted, and refresh activation sta
   saveConfig(paths, { ...defaultConfig(root), model: "model-one" });
   const store = new ApiProfileStore(paths, new FakeProtector());
   const first = await store.create({ name: "Primary", baseUrl: "https://one.example/v1", apiKey: "secret-one", model: "model-one" });
+  await store.activate(first.id);
   const profileManager = new ApiProfileManager({
     store,
     fetch: async () => new Response(JSON.stringify({ id: "resp_test", output: [] }), { status: 200 }),
     writeProviderConfig: () => undefined,
     loadConfig: () => loadConfig(paths),
     saveConfig: (config) => saveConfig(paths, config),
-    restartRuntime: async () => undefined,
+    restartRuntime: async (prepare) => { await prepare?.(); },
     readRuntime: async () => ({ model: loadConfig(paths).model, provider: "codex_local_access" })
   });
   const server = await startLocalHttpServer({
@@ -90,10 +91,11 @@ test("API profile routes are authenticated, redacted, and refresh activation sta
   const editedResponse = await fetch(`${server.url}/api/api-profiles/${created.id}`, {
     method: "PATCH",
     headers,
-    body: JSON.stringify({ name: "Backup edited", apiKey: "" })
+    body: JSON.stringify({ name: "Backup edited", effort: "max", apiKey: "" })
   });
   assert.equal(editedResponse.status, 200);
   assert.equal(await store.readSecret(created.id), "secret-two");
+  assert.equal(store.list().find((profile) => profile.id === created.id)?.effort, "max");
 
   const tested = await fetch(`${server.url}/api/api-profiles/${created.id}/test`, { method: "POST", headers });
   assert.equal(tested.status, 200);
@@ -103,11 +105,12 @@ test("API profile routes are authenticated, redacted, and refresh activation sta
   assert.equal(activated.status, 200);
   const activatedBody = await activated.json() as {
     activeApiProfileId: string;
-    config: { model: string };
-    codexRuntime: { model: string };
+    config: { model: string; effort: string };
+    codexRuntime: { model: string; effort?: string };
   };
   assert.equal(activatedBody.activeApiProfileId, created.id);
   assert.equal(activatedBody.config.model, "model-two");
+  assert.equal(activatedBody.config.effort, "max");
   assert.equal(activatedBody.codexRuntime.model, "model-two");
   assert.doesNotMatch(JSON.stringify(activatedBody), /secret-two|encrypted:/);
 
@@ -120,4 +123,68 @@ test("API profile routes are authenticated, redacted, and refresh activation sta
   const listed = await fetch(`${server.url}/api/api-profiles`);
   assert.equal(listed.status, 200);
   assert.doesNotMatch(await listed.text(), /secret-two|encrypted:/);
+});
+
+test("API profile activation requires confirmation before interrupting active tasks", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-profile-http-confirm-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const paths = resolveStatePaths(root);
+  saveConfig(paths, { ...defaultConfig(root), model: "model-one" });
+  const store = new ApiProfileStore(paths, new FakeProtector());
+  const first = await store.create({ name: "Primary", baseUrl: "https://one.example/v1", apiKey: "secret-one", model: "model-one" });
+  const second = await store.create({ name: "Backup", baseUrl: "https://two.example/v1", apiKey: "secret-two", model: "model-two" });
+  await store.activate(first.id);
+  const accountManager = new AccountManager({ paths });
+  accountManager.getActiveTaskCount = () => 2;
+  const restartOptions: Array<{ interruptActiveTasks?: boolean } | undefined> = [];
+  const profileManager = new ApiProfileManager({
+    store,
+    fetch: async () => new Response(JSON.stringify({ id: "resp_test", output: [] }), { status: 200 }),
+    writeProviderConfig: () => undefined,
+    loadConfig: () => loadConfig(paths),
+    saveConfig: (config) => saveConfig(paths, config),
+    restartRuntime: async (prepare, options) => {
+      restartOptions.push(options);
+      await prepare?.();
+    },
+    getActiveTaskCount: () => accountManager.getActiveTaskCount(),
+    readRuntime: async () => ({ model: loadConfig(paths).model, provider: "codex_local_access" })
+  });
+  const server = await startLocalHttpServer({
+    paths,
+    accountManager,
+    apiProfileManager: profileManager,
+    codexCheck: async () => ({ ready: true }),
+    codexRuntimeCheck: async () => ({ model: loadConfig(paths).model }),
+    codexModelsCheck: async () => [],
+    port: 0
+  });
+  t.after(() => server.close());
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Codex-Weixin-Token": server.requestToken,
+    Origin: server.url
+  };
+
+  const requiresConfirmation = await fetch(`${server.url}/api/api-profiles/${second.id}/activate`, {
+    method: "POST",
+    headers
+  });
+  assert.equal(requiresConfirmation.status, 409);
+  assert.deepEqual(await requiresConfirmation.json(), {
+    error: "检测到 2 个正在执行的任务。是否直接切换？确认后将结束这些任务。",
+    code: "ACTIVE_TASKS",
+    activeTaskCount: 2
+  });
+  assert.deepEqual(restartOptions, []);
+  assert.equal(store.getActive()?.id, first.id);
+
+  const confirmed = await fetch(`${server.url}/api/api-profiles/${second.id}/activate`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ interruptActiveTasks: true })
+  });
+  assert.equal(confirmed.status, 200);
+  assert.deepEqual(restartOptions, [{ interruptActiveTasks: true }]);
+  assert.equal(store.getActive()?.id, second.id);
 });

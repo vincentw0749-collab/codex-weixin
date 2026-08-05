@@ -536,6 +536,20 @@ function renderApiProfiles() {
   drawIcons();
 }
 
+async function activateApiProfile(profile) {
+  const url = `/api/api-profiles/${encodeURIComponent(profile.id)}/activate`;
+  try {
+    return await api(url, { method: "POST" });
+  } catch (error) {
+    if (error?.code !== "ACTIVE_TASKS") throw error;
+    const taskCount = Number.isInteger(error.activeTaskCount) ? error.activeTaskCount : "正在";
+    if (!window.confirm(`检测到 ${taskCount} 个正在执行的任务。直接切换将结束这些任务，是否继续？`)) {
+      return undefined;
+    }
+    return api(url, { method: "POST", body: { interruptActiveTasks: true } });
+  }
+}
+
 async function handleApiProfileAction(event) {
   const button = event.target.closest("[data-api-profile-action]");
   if (!button || button.disabled || state.apiProfileBusyId) return;
@@ -558,7 +572,12 @@ async function handleApiProfileAction(event) {
       return;
     }
     if (action === "activate") {
-      applyApiProfileState(await api(`/api/api-profiles/${encodeURIComponent(profile.id)}/activate`, { method: "POST" }));
+      const activated = await activateApiProfile(profile);
+      if (!activated) {
+        toast("已取消 API 切换，当前任务继续执行。");
+        return;
+      }
+      applyApiProfileState(activated);
       toast(`已切换到 ${profile.name}`);
     }
   } catch (error) {
@@ -616,8 +635,13 @@ async function saveApiProfile(event) {
     const profileId = saved.profile.id;
     if (intent === "activate" || existing?.active || saved.profile.active) {
       setApiProfileBusy(profileId);
-      applyApiProfileState(await api(`/api/api-profiles/${encodeURIComponent(profileId)}/activate`, { method: "POST" }));
-      toast(`已保存并启用 ${body.name}`);
+      const activated = await activateApiProfile({ id: profileId, name: body.name });
+      if (activated) {
+        applyApiProfileState(activated);
+        toast(`已保存并启用 ${body.name}`);
+      } else {
+        toast(`已保存 ${body.name}，未切换`);
+      }
     } else {
       toast(`已保存 ${body.name}`);
     }
@@ -1514,7 +1538,15 @@ async function api(url, options = {}) {
     body: options.body ? (isFormData ? options.body : JSON.stringify(options.body)) : undefined
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `请求失败 (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(data.error || `请求失败 (${response.status})`);
+    Object.assign(error, {
+      status: response.status,
+      ...(data.code ? { code: data.code } : {}),
+      ...(Number.isInteger(data.activeTaskCount) ? { activeTaskCount: data.activeTaskCount } : {})
+    });
+    throw error;
+  }
   return data;
 }
 

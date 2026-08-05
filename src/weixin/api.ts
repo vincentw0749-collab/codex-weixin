@@ -6,6 +6,7 @@ export type WeixinApiClientOptions = {
   baseUrl: string;
   token: string;
   fetch?: FetchLike;
+  requestTimeoutMs?: number;
 };
 
 export class WeixinApiError extends Error {
@@ -211,9 +212,13 @@ export class WeixinApiClient {
   }
 
   private async post(endpoint: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const timeoutMs = this.options.requestTimeoutMs ?? 30_000;
+    const requestSignal = signal ?? (
+      Number.isFinite(timeoutMs) && timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined
+    );
     const response = await this.fetchImpl(`${this.baseUrl}/${endpoint}`, {
       method: "POST",
-      signal,
+      signal: requestSignal,
       headers: {
         "Content-Type": "application/json",
         AuthorizationType: "ilink_bot_token",

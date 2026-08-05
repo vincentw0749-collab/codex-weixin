@@ -117,6 +117,104 @@ test("continues with the remaining batch after one message fails", async (t) => 
   assert.deepEqual(failures, ["first:message failed"]);
 });
 
+test("dispatches /stop while an earlier message from the same batch is still active", async (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.method(console, "log", () => {});
+  const controller = new AbortController();
+  let polls = 0;
+  let releaseTask!: () => void;
+  const taskGate = new Promise<void>((resolve) => {
+    releaseTask = resolve;
+  });
+  let taskActive = false;
+  let stopObservedActiveTask = false;
+  const failsafe = setTimeout(releaseTask, 500);
+  t.after(() => clearTimeout(failsafe));
+
+  const client = {
+    async getUpdates() {
+      polls += 1;
+      if (polls === 1) {
+        return {
+          msgs: [
+            { message_id: "task", from_user_id: "alice", text: "long task" },
+            { message_id: "stop", from_user_id: "alice", text: "/stop" }
+          ]
+        };
+      }
+      controller.abort();
+      return { msgs: [] };
+    }
+  } as WeixinApiClient;
+
+  await monitorWeixin({
+    client,
+    signal: controller.signal,
+    pollIntervalMs: 0,
+    async onMessage(message) {
+      if (message.id === "task") {
+        taskActive = true;
+        await taskGate;
+        taskActive = false;
+        return;
+      }
+      stopObservedActiveTask = taskActive;
+      releaseTask();
+    }
+  });
+
+  assert.equal(stopObservedActiveTask, true);
+});
+
+test("dispatches /api while an earlier message from the same sender is still active", async (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.method(console, "log", () => {});
+  const controller = new AbortController();
+  let polls = 0;
+  let releaseTask!: () => void;
+  const taskGate = new Promise<void>((resolve) => {
+    releaseTask = resolve;
+  });
+  let taskActive = false;
+  let apiObservedActiveTask = false;
+  const failsafe = setTimeout(releaseTask, 500);
+  t.after(() => clearTimeout(failsafe));
+
+  const client = {
+    async getUpdates() {
+      polls += 1;
+      if (polls === 1) {
+        return {
+          msgs: [
+            { message_id: "task", from_user_id: "alice", text: "long task" },
+            { message_id: "api", from_user_id: "alice", text: "/api use 2" }
+          ]
+        };
+      }
+      controller.abort();
+      return { msgs: [] };
+    }
+  } as WeixinApiClient;
+
+  await monitorWeixin({
+    client,
+    signal: controller.signal,
+    pollIntervalMs: 0,
+    async onMessage(message) {
+      if (message.id === "task") {
+        taskActive = true;
+        await taskGate;
+        taskActive = false;
+        return;
+      }
+      apiObservedActiveTask = taskActive;
+      releaseTask();
+    }
+  });
+
+  assert.equal(apiObservedActiveTask, true);
+});
+
 test("skips duplicate message ids and persists the latest sync key", async (t) => {
   t.mock.method(console, "log", () => {});
   const controller = new AbortController();

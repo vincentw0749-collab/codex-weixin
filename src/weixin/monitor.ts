@@ -39,6 +39,23 @@ export async function monitorWeixin(options: MonitorOptions): Promise<void> {
   let syncKey = options.initialSyncKey;
   const pollIntervalMs = options.pollIntervalMs ?? 1000;
   const retryBackoff = new PollRetryBackoff(pollIntervalMs, options.maxPollRetryMs ?? 30_000);
+  const pendingBySender = new Map<string, Promise<void>>();
+
+  const dispatchMessage = async (message: NormalizedWeixinMessage): Promise<void> => {
+    try {
+      console.log(`[codex-weixin] handling message ${message.id} from ${message.senderId}`);
+      await options.onMessage(message);
+      console.log(`[codex-weixin] handled message ${message.id} from ${message.senderId}`);
+    } catch (error) {
+      console.error(`[codex-weixin] message handling failed for ${message.senderId}: ${errorDetail(error)}`);
+      try {
+        await options.onMessageError?.(error, message);
+      } catch (reportError) {
+        console.error(`[codex-weixin] failed to report message error for ${message.senderId}: ${errorDetail(reportError)}`);
+      }
+    }
+  };
+
   while (!options.signal?.aborted) {
     let batch: { syncKey?: string; messages: WeixinRawMessage[] };
     try {
@@ -73,23 +90,34 @@ export async function monitorWeixin(options: MonitorOptions): Promise<void> {
         console.log(`[codex-weixin] skipped duplicate message ${normalized.id} from ${normalized.senderId}`);
         continue;
       }
-      try {
-        console.log(`[codex-weixin] handling message ${normalized.id} from ${normalized.senderId}`);
-        await options.onMessage(normalized);
-        console.log(`[codex-weixin] handled message ${normalized.id} from ${normalized.senderId}`);
-      } catch (error) {
-        console.error(`[codex-weixin] message handling failed for ${normalized.senderId}: ${errorDetail(error)}`);
-        try {
-          await options.onMessageError?.(error, normalized);
-        } catch (reportError) {
-          console.error(`[codex-weixin] failed to report message error for ${normalized.senderId}: ${errorDetail(reportError)}`);
-        }
+
+      if (isControlCommand(normalized)) {
+        await dispatchMessage(normalized);
+        continue;
       }
+
+      const previous = pendingBySender.get(normalized.senderId);
+      const current = previous
+        ? previous.then(() => dispatchMessage(normalized))
+        : dispatchMessage(normalized);
+      pendingBySender.set(normalized.senderId, current);
+      void current.finally(() => {
+        if (pendingBySender.get(normalized.senderId) === current) {
+          pendingBySender.delete(normalized.senderId);
+        }
+      });
     }
     if (!messages.length) {
       await delay(pollIntervalMs, options.signal);
     }
   }
+
+  await Promise.allSettled(pendingBySender.values());
+}
+
+function isControlCommand(message: NormalizedWeixinMessage): boolean {
+  const text = message.text.trim().toLowerCase();
+  return text === "/stop" || /^\/api(?:\s|$)/.test(text);
 }
 
 function parseUpdateBatch(value: unknown): { syncKey?: string; messages: WeixinRawMessage[] } {

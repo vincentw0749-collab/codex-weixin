@@ -3,6 +3,11 @@ import type { PromptBufferItem } from "./prompt-buffer.js";
 const BRIDGE_ACTION_INSTRUCTIONS = [
   "WeChat bridge rule: when you need to send a local image, video, or file to the user, do not use Markdown local file links.",
   "When a WeChat attachment line includes a local path, inspect the saved local attachment with available tools before answering.",
+  "Treat an explicit user command as authorization for non-destructive local actions and execute it without asking for duplicate permission.",
+  "For browser work, use the configured Playwright MCP in background/headless mode; never launch or control a foreground browser.",
+  "If a QR code or verification requires the user, capture it to a local image, send it with the action block below, and wait only for that narrow user action.",
+  "Every task turn must end with a user-facing final report. State whether it is completed, needs user action, or is blocked; summarize the concrete work completed; and state the exact next user action only when one is needed.",
+  "Never finish with an empty reply, a progress-only message, or only a codex-weixin-actions block. A final report is mandatory before the turn is considered complete.",
   "Use a fenced codex-weixin-actions JSON block instead, for example:",
   "```codex-weixin-actions",
   "{\"send\":[{\"type\":\"image\",\"path\":\"C:/absolute/path/image.png\"},{\"type\":\"video\",\"path\":\"C:/absolute/path/video.mp4\"}]}",
@@ -10,6 +15,17 @@ const BRIDGE_ACTION_INSTRUCTIONS = [
 ].join("\n");
 const LEGACY_BRIDGE_ACTION_INSTRUCTIONS = BRIDGE_ACTION_INSTRUCTIONS
   .replaceAll("codex-weixin-actions", "codex-weixin-server-actions");
+
+export const MISSING_FINAL_REPORT_PROMPT = [
+  "上一轮已经结束，但没有给用户提供任何可读的最终汇报。",
+  "不要重新执行或重复任何可能已经完成的操作；先核验当前会话和已执行状态。",
+  "现在只发送一条完整的最终汇报：说明状态（已完成、需要用户操作或受阻）、实际完成的事项，以及必要时用户下一步该做什么。",
+  "这条汇报不能为空，不能只是过程消息，也不能只包含文件或图片发送动作。"
+].join("\n");
+
+export function hasVisibleFinalReport(text: string): boolean {
+  return text.trim().length > 0;
+}
 
 export function buildPrompt(
   text: string,

@@ -25,6 +25,7 @@
   },
   "files": [
     "dist/",
+    "resources/",
     "src/web/favicon.svg",
     "README.md",
     "README.en.md",
@@ -46,6 +47,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@playwright/mcp": "0.0.78",
     "dompurify": "^3.4.12",
     "lucide": "^0.468.0",
     "marked": "^18.0.6",

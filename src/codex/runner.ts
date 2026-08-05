@@ -20,6 +20,7 @@ export type HybridCodexRunnerOptions = {
 export class HybridCodexRunner {
   private readonly appServer: AppServerCodexRunner;
   private readonly exec: CodexExecRunner;
+  private closed = false;
 
   constructor(private readonly options: HybridCodexRunnerOptions) {
     this.appServer = new AppServerCodexRunner({
@@ -34,6 +35,7 @@ export class HybridCodexRunner {
   }
 
   async run(input: CodexRunnerInput): Promise<CodexRunResult> {
+    this.throwIfClosed();
     const requiresAppServerForStreaming = Boolean(input.onDelta || input.onProgress);
     if (this.options.backend === "exec" && !requiresAppServerForStreaming) {
       return this.exec.run(input);
@@ -41,6 +43,7 @@ export class HybridCodexRunner {
     try {
       return await this.appServer.run(input);
     } catch (error) {
+      this.throwIfClosed();
       if (this.options.backend === "app-server") {
         throw error;
       }
@@ -76,7 +79,15 @@ export class HybridCodexRunner {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.appServer.close();
     this.exec.close();
+  }
+
+  private throwIfClosed(): void {
+    if (this.closed) {
+      throw new Error("Codex runner is closed");
+    }
   }
 }

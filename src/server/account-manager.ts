@@ -2,10 +2,16 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { parseActionBlocks } from "../bridge/actions.js";
-import { buildPrompt, buildPromptPreview, parsePrompt } from "../bridge/format.js";
+import { parseActionBlocks, type SendAction } from "../bridge/actions.js";
+import {
+  buildPrompt,
+  buildPromptPreview,
+  hasVisibleFinalReport,
+  MISSING_FINAL_REPORT_PROMPT,
+  parsePrompt
+} from "../bridge/format.js";
 import type { PromptBufferItem } from "../bridge/prompt-buffer.js";
-import { BridgeService } from "../bridge/service.js";
+import { BridgeService, type ApiProfileCommandService } from "../bridge/service.js";
 import { userFacingMessageHandlingError } from "../bridge/errors.js";
 import type { CodexHistoryMessage, CodexModelOption, CodexRuntimeInfo } from "../codex/app-server-runner.js";
 import { HybridCodexRunner } from "../codex/runner.js";
@@ -24,7 +30,7 @@ import {
   type PublicWeixinAccount,
   type WeixinAccount
 } from "../weixin/accounts.js";
-import { WeixinApiClient } from "../weixin/api.js";
+import { WeixinApiClient, isStaleContextError } from "../weixin/api.js";
 import { monitorWeixin, type MonitorOptions } from "../weixin/monitor.js";
 import { inferMediaKind, sanitizeFileName } from "../weixin/media.js";
 
@@ -83,6 +89,14 @@ type RuntimeEntry = {
   error?: string;
 };
 
+type ActiveWebTurn = {
+  runner: HybridCodexRunner;
+  threadId?: string;
+  cancelled: boolean;
+  cancellation: Promise<never>;
+  rejectCancellation: (error: Error) => void;
+};
+
 export type AccountManagerOptions = {
   paths: StatePaths;
   configProvider?: () => CodexWeixinConfig;
@@ -90,17 +104,30 @@ export type AccountManagerOptions = {
   bridgeFactory?: (input: ConstructorParameters<typeof BridgeService>[0]) => BridgeService;
   monitor?: (options: MonitorOptions) => Promise<void>;
   runnerFactory?: (config: CodexWeixinConfig) => HybridCodexRunner;
+  terminalReportRetryDelay?: (retryAttempt: number) => Promise<void> | void;
+};
+
+type RuntimePreparation = () => Promise<void> | void;
+
+export type RuntimeRestartOptions = {
+  interruptActiveTasks?: boolean;
 };
 
 export class AccountManager {
   private readonly entries = new Map<string, RuntimeEntry>();
   private readonly respondingSessions = new Map<string, number>();
+  private readonly activeWebTurns = new Map<string, Set<ActiveWebTurn>>();
   private readonly configProvider: () => CodexWeixinConfig;
   private readonly clientFactory: (account: WeixinAccount) => WeixinApiClient;
   private readonly bridgeFactory: (input: ConstructorParameters<typeof BridgeService>[0]) => BridgeService;
   private readonly monitor: (options: MonitorOptions) => Promise<void>;
   private readonly runnerFactory: (config: CodexWeixinConfig) => HybridCodexRunner;
+  private readonly terminalReportRetryDelay: (retryAttempt: number) => Promise<void> | void;
   private runner?: HybridCodexRunner;
+  private apiProfiles?: ApiProfileCommandService;
+  private runtimeRestartPromise?: Promise<void>;
+  private readonly idleTurnWaiters = new Set<() => void>();
+  private shuttingDown = false;
 
   constructor(private readonly options: AccountManagerOptions) {
     this.configProvider = options.configProvider ?? (() => loadConfig(options.paths));
@@ -115,28 +142,75 @@ export class AccountManager {
       codexBin: config.codexBin,
       execSandbox: config.codexExecSandbox
     }));
+    this.terminalReportRetryDelay = options.terminalReportRetryDelay ?? (async (retryAttempt) => {
+      const delayMs = Math.min(retryAttempt * 1_000, 10_000);
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    });
   }
 
   async startAll(): Promise<void> {
+    this.shuttingDown = false;
     await Promise.all(listAccounts(this.options.paths)
       .filter((account) => account.enabled)
       .map((account) => this.startAccount(account.accountId, false)));
   }
 
+  setApiProfileCommandService(apiProfiles: ApiProfileCommandService): void {
+    this.apiProfiles = apiProfiles;
+  }
+
   async stopAll(): Promise<void> {
+    this.shuttingDown = true;
     await Promise.all(listAccounts(this.options.paths)
       .filter((account) => this.entries.get(account.accountId)?.status === "running")
       .map((account) => this.stopAccount(account.accountId, false)));
     this.closeRunner();
   }
 
-  async restartRunning(): Promise<void> {
-    const running = listAccounts(this.options.paths)
-      .filter((account) => this.entries.get(account.accountId)?.status === "running")
-      .map((account) => account.accountId);
-    await Promise.all(running.map((accountId) => this.stopAccount(accountId, false)));
-    this.closeRunner();
-    await Promise.all(running.map((accountId) => this.startAccount(accountId, false)));
+  async restartRunning(
+    prepare?: RuntimePreparation,
+    options: RuntimeRestartOptions = {}
+  ): Promise<void> {
+    if (this.runtimeRestartPromise) {
+      if (prepare) {
+        return this.runtimeRestartPromise.then(() => this.restartRunning(prepare, options));
+      }
+      return this.runtimeRestartPromise;
+    }
+    let resolveGate!: () => void;
+    let rejectGate!: (error: unknown) => void;
+    const gate = new Promise<void>((resolve, reject) => {
+      resolveGate = resolve;
+      rejectGate = reject;
+    });
+    this.runtimeRestartPromise = gate;
+    void this.restartRuntimeWhenIdle(prepare, options)
+      .then(() => {
+        if (this.runtimeRestartPromise === gate) {
+          this.runtimeRestartPromise = undefined;
+        }
+        resolveGate();
+      }, (error: unknown) => {
+        if (this.runtimeRestartPromise === gate) {
+          this.runtimeRestartPromise = undefined;
+        }
+        rejectGate(error);
+      });
+    return gate;
+  }
+
+  clearSessionRuntimeOverrides(): void {
+    for (const entry of this.entries.values()) {
+      entry.store?.clearModelAndEffortOverrides();
+    }
+  }
+
+  getActiveTaskCount(): number {
+    const weChatTurns = [...this.entries.values()]
+      .reduce((count, entry) => count + (entry.service?.getActiveTaskCount() ?? 0), 0);
+    const webTurns = [...this.activeWebTurns.values()]
+      .reduce((count, turns) => count + turns.size, 0);
+    return weChatTurns + webTurns;
   }
 
   async refreshAccount(accountId: string): Promise<AccountSummary> {
@@ -167,7 +241,9 @@ export class AccountManager {
       inboundDir: statePaths.inboundDir,
       runner: this.runnerFor(config),
       listCodexModels: () => this.getCodexModels(),
-      onTurnStatus: ({ sessionId, active }) => this.setSessionResponding(account.accountId, sessionId, active)
+      apiProfiles: this.apiProfiles,
+      onTurnStatus: ({ sessionId, active }) => this.setSessionResponding(account.accountId, sessionId, active),
+      waitForRuntimeReady: () => this.waitForRuntimeReady()
     });
     const entry: RuntimeEntry = { status: "starting", controller, service, store };
     this.entries.set(account.accountId, entry);
@@ -181,11 +257,18 @@ export class AccountManager {
       claimMessage: (message) => store.claimProcessedMessage(message.id),
       onMessage: (message) => service.handleMessage(message),
       onMessageError: async (error, message) => {
-        await client.sendText({
-          toUserId: message.senderId,
-          text: userFacingMessageHandlingError(error),
-          contextToken: store.getContextToken(message.senderId)
-        });
+        try {
+          await client.sendText({
+            toUserId: message.senderId,
+            text: userFacingMessageHandlingError(error, {
+              apiProfileName: this.apiProfiles?.getActive()?.name
+            }),
+            contextToken: store.getContextToken(message.senderId)
+          });
+        } catch (sendError) {
+          if (!isStaleContextError(sendError)) throw sendError;
+          console.warn(`WeChat context token is stale for ${message.senderId}; ask user to send a fresh message.`);
+        }
       }
     }).then(() => {
       entry.status = "stopped";
@@ -204,6 +287,7 @@ export class AccountManager {
     const account = persist ? setAccountEnabled(this.options.paths, accountId, false) : loadAccount(this.options.paths, accountId);
     const entry = this.entries.get(account.accountId);
     if (entry) {
+      await entry.service?.cancelActiveTurns();
       entry.controller?.abort();
       await entry.task;
       entry.status = "stopped";
@@ -329,8 +413,10 @@ export class AccountManager {
   }
 
   deleteSession(accountId: string, sessionId: string): void {
+    if (this.isSessionResponding(accountId, sessionId)) {
+      throw new Error("Cannot delete a responding session");
+    }
     this.storeFor(accountId).deleteSession(sessionId);
-    this.respondingSessions.delete(sessionRuntimeKey(accountId, sessionId));
   }
 
   async getSessionMessages(accountId: string, sessionId: string): Promise<SessionHistoryMessage[]> {
@@ -393,6 +479,10 @@ export class AccountManager {
     if (!prompt && !uploads.length) {
       throw new Error("Message text or attachment is required");
     }
+    const runtimeReady = this.waitForRuntimeReady();
+    if (runtimeReady) {
+      await runtimeReady;
+    }
     const store = this.storeFor(accountId);
     const session = requireSession(store, sessionId);
     const config = this.configProvider();
@@ -401,24 +491,63 @@ export class AccountManager {
     if (promptPreview) {
       store.setSessionPromptPreview(session.id, promptPreview);
     }
-    this.setSessionResponding(accountId, session.id, true);
+    const runner = this.runnerFor(config);
+    const control = this.beginWebTurn(accountId, session.id, runner);
     try {
-      const result = await this.runnerFor(config).run({
+      let result = await this.runWebTurn(control, () => runner.run({
         prompt: buildPrompt(prompt, attachments, "Web"),
         cwd: session.workspace,
         threadId: session.threadId,
         model: session.model ?? config.model,
         effort: session.effort ?? config.effort,
+        onThreadStarted: (threadId) => {
+          if (control.cancelled) return;
+          control.threadId = threadId;
+          store.setSessionThread(session.id, threadId);
+        },
         ...((session.streamReplies ?? config.streamReplies) && onProgress
           ? { onProgress }
           : {})
-      });
-      const threadId = result.threadId ?? session.threadId;
+      }));
+      let reportRetryAttempt = 0;
+      const pendingSendActions = new Map<string, SendAction>();
+      while (true) {
+        const parsed = parseAssistantMessage(result.text);
+        if (hasVisibleFinalReport(parsed.visibleText)) break;
+        for (const action of parsed.actions.send) {
+          pendingSendActions.set(action.path.toLowerCase(), action);
+        }
+        reportRetryAttempt += 1;
+        const threadId = result.threadId ?? control.threadId ?? session.threadId;
+        if (!threadId) {
+          throw new Error("Codex returned no visible final report and no thread id for recovery");
+        }
+        store.setSessionThread(session.id, threadId);
+        control.threadId = threadId;
+        await this.runWebTurn(control, async () => this.terminalReportRetryDelay(reportRetryAttempt));
+        result = await this.runWebTurn(control, () => runner.run({
+          prompt: buildPrompt(MISSING_FINAL_REPORT_PROMPT, [], "Web"),
+          cwd: session.workspace,
+          threadId,
+          model: session.model ?? config.model,
+          effort: session.effort ?? config.effort,
+          onThreadStarted: (startedThreadId) => {
+            if (control.cancelled) return;
+            control.threadId = startedThreadId;
+            store.setSessionThread(session.id, startedThreadId);
+          }
+        }));
+      }
+      const threadId = result.threadId ?? control.threadId ?? session.threadId;
       if (!threadId) {
         throw new Error("Codex did not return a thread id");
       }
       store.setSessionThread(session.id, threadId);
       const parsed = parseAssistantMessage(result.text);
+      const sendActions = new Map<string, SendAction>();
+      for (const action of [...pendingSendActions.values(), ...parsed.actions.send]) {
+        sendActions.set(action.path.toLowerCase(), action);
+      }
       return {
         threadId,
         message: {
@@ -426,15 +555,50 @@ export class AccountManager {
           role: "assistant",
           text: parsed.visibleText.trim(),
           createdAt: new Date().toISOString(),
-          attachments: parsed.actions.send.map((action, index) => {
+          attachments: [...sendActions.values()].map((action, index) => {
             const { path: _path, ...attachment } = sessionAttachment(action, index);
             return attachment;
           })
         }
       };
     } finally {
-      this.setSessionResponding(accountId, session.id, false);
+      this.finishWebTurn(accountId, session.id, control);
     }
+  }
+
+  private beginWebTurn(accountId: string, sessionId: string, runner: HybridCodexRunner): ActiveWebTurn {
+    let rejectCancellation!: (error: Error) => void;
+    const control: ActiveWebTurn = {
+      runner,
+      cancelled: false,
+      cancellation: new Promise<never>((_resolve, reject) => {
+        rejectCancellation = reject;
+      }),
+      rejectCancellation
+    };
+    const key = sessionRuntimeKey(accountId, sessionId);
+    const turns = this.activeWebTurns.get(key) ?? new Set<ActiveWebTurn>();
+    turns.add(control);
+    this.activeWebTurns.set(key, turns);
+    this.setSessionResponding(accountId, sessionId, true);
+    return control;
+  }
+
+  private finishWebTurn(accountId: string, sessionId: string, control: ActiveWebTurn): void {
+    const key = sessionRuntimeKey(accountId, sessionId);
+    const turns = this.activeWebTurns.get(key);
+    if (!turns?.delete(control)) return;
+    if (!turns.size) {
+      this.activeWebTurns.delete(key);
+    }
+    this.setSessionResponding(accountId, sessionId, false);
+  }
+
+  private runWebTurn<T>(control: ActiveWebTurn, operation: () => Promise<T>): Promise<T> {
+    if (control.cancelled) {
+      return Promise.reject(apiSwitchCancellationError());
+    }
+    return Promise.race([operation(), control.cancellation]);
   }
 
   private saveSessionUploads(accountId: string, sessionId: string, uploads: SessionUpload[]): PromptBufferItem[] {
@@ -514,7 +678,86 @@ export class AccountManager {
       this.respondingSessions.set(key, next);
     } else {
       this.respondingSessions.delete(key);
+      if (!this.respondingSessions.size) {
+        for (const resolve of this.idleTurnWaiters) {
+          resolve();
+        }
+        this.idleTurnWaiters.clear();
+      }
     }
+  }
+
+  private async restartRuntimeWhenIdle(
+    prepare?: RuntimePreparation,
+    options: RuntimeRestartOptions = {}
+  ): Promise<void> {
+    if (options.interruptActiveTasks) {
+      await this.interruptActiveTasksForApiSwitch();
+    } else {
+      await this.waitForNoActiveTurns();
+    }
+    if (this.shuttingDown) return;
+
+    await prepare?.();
+
+    const previous = this.runner;
+    if (!previous) return;
+    const config = this.configProvider();
+    const replacement = this.runnerFactory(config);
+    this.runner = replacement;
+    for (const entry of this.entries.values()) {
+      entry.service?.replaceRuntime(replacement, config);
+    }
+    previous.close();
+  }
+
+  private async interruptActiveTasksForApiSwitch(): Promise<void> {
+    const notice = "当前任务已因确认的 API 切换而结束。";
+    const retiringRunners = new Set<HybridCodexRunner>();
+    if (this.runner) {
+      retiringRunners.add(this.runner);
+    }
+
+    const cancellationRequests = [...this.entries.values()]
+      .flatMap((entry) => entry.service ? [entry.service.cancelActiveTurns(notice)] : []);
+    const cancellationResults = await Promise.allSettled(cancellationRequests);
+    for (const result of cancellationResults) {
+      if (result.status === "rejected") {
+        console.warn(`Unable to request WeChat task cancellation: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+      }
+    }
+
+    for (const [key, turns] of [...this.activeWebTurns.entries()]) {
+      const [accountId, sessionId] = key.split("\n", 2);
+      for (const control of [...turns]) {
+        retiringRunners.add(control.runner);
+        if (!control.cancelled) {
+          control.cancelled = true;
+          control.rejectCancellation(apiSwitchCancellationError());
+        }
+        this.finishWebTurn(accountId, sessionId, control);
+        void control.runner.stop(control.threadId).catch((error: unknown) => {
+          console.warn(`Unable to request Web task cancellation: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
+    }
+
+    for (const runner of retiringRunners) {
+      runner.close();
+    }
+  }
+
+  private waitForRuntimeReady(): Promise<void> | undefined {
+    return this.runtimeRestartPromise;
+  }
+
+  private waitForNoActiveTurns(): Promise<void> {
+    if (!this.respondingSessions.size) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      this.idleTurnWaiters.add(resolve);
+    });
   }
 
   private runnerFor(config = this.configProvider()): HybridCodexRunner {
@@ -600,6 +843,10 @@ function isPathWithin(root: string, candidate: string): boolean {
 
 function sessionRuntimeKey(accountId: string, sessionId: string): string {
   return `${accountId}\n${sessionId}`;
+}
+
+function apiSwitchCancellationError(): Error {
+  return new Error("Web task was stopped because the API switch was confirmed");
 }
 
 function addProviderModelFamily(models: CodexModelOption[], provider?: string): CodexModelOption[] {

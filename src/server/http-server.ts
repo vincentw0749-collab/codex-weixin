@@ -44,16 +44,27 @@ const apiProfileCreateSchema = z.object({
   name: z.string().trim().min(1).max(60),
   baseUrl: z.string().trim().min(1).max(2048),
   apiKey: z.string().min(1).max(8192),
-  model: z.string().trim().min(1).max(200)
+  model: z.string().trim().min(1).max(200),
+  effort: z.string().trim().min(1).max(40).optional()
 });
 const apiProfileUpdateSchema = z.object({
   name: z.string().trim().min(1).max(60).optional(),
   baseUrl: z.string().trim().min(1).max(2048).optional(),
   apiKey: z.string().max(8192).optional(),
-  model: z.string().trim().min(1).max(200).optional()
+  model: z.string().trim().min(1).max(200).optional(),
+  effort: z.string().trim().min(1).max(40).optional()
 }).refine((value) => Object.keys(value).length > 0, "API profile update is empty");
+const apiProfileActivationSchema = z.object({
+  interruptActiveTasks: z.boolean().optional()
+});
 const MAX_WEB_UPLOAD_FILES = 10;
 const MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
+
+class ActiveTasksRequireConfirmationError extends Error {
+  constructor(readonly activeTaskCount: number) {
+    super(`检测到 ${activeTaskCount} 个正在执行的任务。是否直接切换？确认后将结束这些任务。`);
+  }
+}
 
 const webRoot = fileURLToPath(new URL("../web", import.meta.url));
 const execFileAsync = promisify(execFile);
@@ -97,7 +108,13 @@ export async function startLocalHttpServer(options: LocalHttpServerOptions): Pro
       port: actualPort
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      sendJson(response, errorStatus(error), { error: message });
+      sendJson(response, errorStatus(error), {
+        error: message,
+        ...(error instanceof ActiveTasksRequireConfirmationError ? {
+          code: "ACTIVE_TASKS",
+          activeTaskCount: error.activeTaskCount
+        } : {})
+      });
     });
   });
 
@@ -214,7 +231,15 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
   }
   if (method === "POST" && apiProfileAction?.action === "activate") {
     const manager = requireApiProfileManager(context);
-    await manager.activate(apiProfileAction.id);
+    const body = apiProfileActivationSchema.parse(await readJsonBody(request));
+    const activeTaskCount = manager.getActiveTaskCount();
+    if (activeTaskCount > 0 && !body.interruptActiveTasks) {
+      throw new ActiveTasksRequireConfirmationError(activeTaskCount);
+    }
+    await manager.activate(
+      apiProfileAction.id,
+      body.interruptActiveTasks ? { interruptActiveTasks: true } : undefined
+    );
     sendJson(response, 200, {
       ...apiProfileState(context),
       config: loadConfig(context.paths),
@@ -599,6 +624,7 @@ function optionalString(value: unknown): string | undefined {
 }
 
 function errorStatus(error: unknown): number {
+  if (error instanceof ActiveTasksRequireConfirmationError) return 409;
   if (error instanceof ApiProfileError) {
     if (error.code === "NOT_FOUND") return 404;
     if (error.code === "CONFLICT") return 409;

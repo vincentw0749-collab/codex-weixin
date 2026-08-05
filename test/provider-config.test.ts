@@ -16,6 +16,7 @@ const profile = {
   name: "Primary \"API\"",
   baseUrl: "https://api.example/v1",
   model: "gpt-5.6-terra",
+  effort: "medium",
   hasApiKey: true,
   active: true,
   createdAt: "2026-07-29T00:00:00.000Z",
@@ -26,7 +27,30 @@ test("renders a deterministic isolated Responses provider without secrets", () =
   const toml = renderProviderConfig(profile, {
     instructionsFile: String.raw`C:\Users\Test\.codex\instructions.md`,
     reasoningEffort: "xhigh",
-    trustedWorkspace: String.raw`D:\VSCODE\project`
+    trustedWorkspace: String.raw`D:\VSCODE\project`,
+    mcpServers: {
+      playwright: {
+        command: String.raw`C:\Program Files\nodejs\node.exe`,
+        args: [
+          String.raw`D:\app\node_modules\@playwright\mcp\cli.js`,
+          "--headless",
+          "--browser",
+          "msedge"
+        ],
+        cwd: String.raw`D:\app`,
+        startupTimeoutSec: 60,
+        toolTimeoutSec: 120,
+        defaultToolsApprovalMode: "approve",
+        required: true
+      },
+      shared_browser: {
+        url: "http://127.0.0.1:45678/mcp",
+        startupTimeoutSec: 60,
+        toolTimeoutSec: 120,
+        defaultToolsApprovalMode: "approve",
+        required: true
+      }
+    }
   });
 
   assert.match(toml, /^model = "gpt-5\.6-terra"/);
@@ -36,11 +60,44 @@ test("renders a deterministic isolated Responses provider without secrets", () =
   assert.match(toml, /wire_api = "responses"/);
   assert.match(toml, /env_key = "CODEX_WEIXIN_PROVIDER_KEY"/);
   assert.match(toml, /name = "Primary \\"API\\""/);
+  assert.match(toml, /\[features\][\s\S]*plugins = false/);
+  assert.match(toml, /remote_plugin = false/);
+  assert.match(toml, /apps = false/);
+  assert.match(toml, /\[mcp_servers\."playwright"\]/);
+  assert.match(toml, /command = "C:\\\\Program Files\\\\nodejs\\\\node\.exe"/);
+  assert.match(toml, /default_tools_approval_mode = "approve"/);
+  assert.match(toml, /startup_timeout_sec = 60/);
+  assert.match(toml, /tool_timeout_sec = 120/);
+  assert.match(toml, /required = true/);
+  assert.match(toml, /\[mcp_servers\."shared_browser"\][\s\S]*url = "http:\/\/127\.0\.0\.1:45678\/mcp"/);
   assert.doesNotMatch(toml, /apiKey|encryptedApiKey|sk-private/);
   assert.equal(toml, renderProviderConfig(profile, {
     instructionsFile: String.raw`C:\Users\Test\.codex\instructions.md`,
     reasoningEffort: "xhigh",
-    trustedWorkspace: String.raw`D:\VSCODE\project`
+    trustedWorkspace: String.raw`D:\VSCODE\project`,
+    mcpServers: {
+      playwright: {
+        command: String.raw`C:\Program Files\nodejs\node.exe`,
+        args: [
+          String.raw`D:\app\node_modules\@playwright\mcp\cli.js`,
+          "--headless",
+          "--browser",
+          "msedge"
+        ],
+        cwd: String.raw`D:\app`,
+        startupTimeoutSec: 60,
+        toolTimeoutSec: 120,
+        defaultToolsApprovalMode: "approve",
+        required: true
+      },
+      shared_browser: {
+        url: "http://127.0.0.1:45678/mcp",
+        startupTimeoutSec: 60,
+        toolTimeoutSec: 120,
+        defaultToolsApprovalMode: "approve",
+        required: true
+      }
+    }
   }));
 });
 

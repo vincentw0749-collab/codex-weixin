@@ -6,12 +6,15 @@ import { writeJsonFile } from "./json-store.js";
 import type { StatePaths } from "./paths.js";
 
 const DOCUMENT_VERSION = 1;
+export const DEFAULT_API_PROFILE_EFFORT = "medium";
+export const API_PROFILE_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
 type ApiProfileRecord = {
   id: string;
   name: string;
   baseUrl: string;
   model: string;
+  effort?: string;
   encryptedApiKey: string;
   createdAt: string;
   updatedAt: string;
@@ -28,10 +31,15 @@ export type ApiProfileSummary = {
   name: string;
   baseUrl: string;
   model: string;
+  effort: string;
   hasApiKey: boolean;
   active: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ApiProfileDisplaySummary = ApiProfileSummary & {
+  apiKeyLastFour: string | null;
 };
 
 export type CreateApiProfileInput = {
@@ -39,6 +47,7 @@ export type CreateApiProfileInput = {
   baseUrl: string;
   apiKey: string;
   model: string;
+  effort?: string;
 };
 
 export type UpdateApiProfileInput = {
@@ -46,6 +55,7 @@ export type UpdateApiProfileInput = {
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  effort?: string;
 };
 
 export type ApiProfileSeed = CreateApiProfileInput;
@@ -81,7 +91,7 @@ export class ApiProfileStore {
 
   create(input: CreateApiProfileInput): Promise<ApiProfileSummary> {
     return this.enqueue(async () => {
-      const normalized = normalizeCreateInput(input);
+      const normalized = normalizeCreateApiProfileInput(input);
       this.requireUniqueName(normalized.name);
       const now = new Date().toISOString();
       const profile: ApiProfileRecord = {
@@ -89,12 +99,12 @@ export class ApiProfileStore {
         name: normalized.name,
         baseUrl: normalized.baseUrl,
         model: normalized.model,
+        effort: normalized.effort,
         encryptedApiKey: await this.protector.protect(normalized.apiKey),
         createdAt: now,
         updatedAt: now
       };
       this.document.profiles.push(profile);
-      this.document.activeProfileId ??= profile.id;
       this.persist();
       return this.toSummary(profile);
     });
@@ -107,6 +117,9 @@ export class ApiProfileStore {
       this.requireUniqueName(name, id);
       const baseUrl = input.baseUrl === undefined ? profile.baseUrl : normalizeBaseUrl(input.baseUrl);
       const model = input.model === undefined ? profile.model : normalizeModel(input.model);
+      const effort = input.effort === undefined
+        ? profile.effort ?? DEFAULT_API_PROFILE_EFFORT
+        : normalizeEffort(input.effort);
       const apiKey = input.apiKey?.trim();
       const encryptedApiKey = apiKey
         ? await this.protector.protect(apiKey)
@@ -116,6 +129,7 @@ export class ApiProfileStore {
         name,
         baseUrl,
         model,
+        effort,
         encryptedApiKey,
         updatedAt: new Date().toISOString()
       };
@@ -148,6 +162,13 @@ export class ApiProfileStore {
     });
   }
 
+  clearActive(): Promise<void> {
+    return this.enqueue(async () => {
+      delete this.document.activeProfileId;
+      this.persist();
+    });
+  }
+
   async readSecret(id: string): Promise<string> {
     const profile = this.requireProfile(id);
     try {
@@ -160,13 +181,14 @@ export class ApiProfileStore {
   ensureMigrated(seed?: ApiProfileSeed): Promise<void> {
     return this.enqueue(async () => {
       if (this.document.profiles.length > 0 || !seed) return;
-      const normalized = normalizeCreateInput(seed);
+      const normalized = normalizeCreateApiProfileInput(seed);
       const now = new Date().toISOString();
       const profile: ApiProfileRecord = {
         id: crypto.randomUUID(),
         name: normalized.name,
         baseUrl: normalized.baseUrl,
         model: normalized.model,
+        effort: normalized.effort,
         encryptedApiKey: await this.protector.protect(normalized.apiKey),
         createdAt: now,
         updatedAt: now
@@ -183,6 +205,7 @@ export class ApiProfileStore {
       name: profile.name,
       baseUrl: profile.baseUrl,
       model: profile.model,
+      effort: profile.effort ?? DEFAULT_API_PROFILE_EFFORT,
       hasApiKey: Boolean(profile.encryptedApiKey),
       active: profile.id === this.document.activeProfileId,
       createdAt: profile.createdAt,
@@ -235,17 +258,19 @@ function validateRecord(value: unknown): ApiProfileRecord {
   const record = value as Record<string, unknown>;
   const required = ["id", "name", "baseUrl", "model", "encryptedApiKey", "createdAt", "updatedAt"];
   if (required.some((key) => typeof record[key] !== "string" || !record[key])) throw new Error("invalid profile");
+  if (record.effort !== undefined) normalizeEffort(String(record.effort));
   return record as ApiProfileRecord;
 }
 
-function normalizeCreateInput(input: CreateApiProfileInput): CreateApiProfileInput {
+export function normalizeCreateApiProfileInput(input: CreateApiProfileInput): CreateApiProfileInput & { effort: string } {
   const apiKey = input.apiKey?.trim();
   if (!apiKey) throw new ApiProfileError("API key cannot be blank", "VALIDATION");
   return {
     name: normalizeName(input.name),
     baseUrl: normalizeBaseUrl(input.baseUrl),
     apiKey,
-    model: normalizeModel(input.model)
+    model: normalizeModel(input.model),
+    effort: normalizeEffort(input.effort ?? DEFAULT_API_PROFILE_EFFORT)
   };
 }
 
@@ -260,6 +285,14 @@ function normalizeModel(model: string): string {
   const value = model?.trim();
   if (!value) throw new ApiProfileError("Model cannot be blank", "VALIDATION");
   if (value.length > 200) throw new ApiProfileError("Model is too long", "VALIDATION");
+  return value;
+}
+
+function normalizeEffort(effort: string): string {
+  const value = effort?.trim().toLowerCase();
+  if (!(API_PROFILE_EFFORTS as readonly string[]).includes(value)) {
+    throw new ApiProfileError(`Reasoning effort must be one of: ${API_PROFILE_EFFORTS.join(", ")}`, "VALIDATION");
+  }
   return value;
 }
 

@@ -9,7 +9,27 @@ export type ProviderConfigOptions = {
   instructionsFile?: string;
   reasoningEffort?: string;
   trustedWorkspace?: string;
+  mcpServers?: Record<string, McpServerConfig>;
 };
+
+type McpServerCommonConfig = {
+  startupTimeoutSec?: number;
+  toolTimeoutSec?: number;
+  defaultToolsApprovalMode?: "auto" | "prompt" | "writes" | "approve";
+  required?: boolean;
+};
+
+export type StdioMcpServerConfig = McpServerCommonConfig & {
+  command: string;
+  args?: string[];
+  cwd?: string;
+};
+
+export type HttpMcpServerConfig = McpServerCommonConfig & {
+  url: string;
+};
+
+export type McpServerConfig = StdioMcpServerConfig | HttpMcpServerConfig;
 
 export function readProviderConfigOptions(configPath: string): ProviderConfigOptions {
   const source = readOptionalFile(configPath);
@@ -53,7 +73,10 @@ export function renderProviderConfig(
     "supports_websockets = false",
     "",
     "[features]",
-    "js_repl = false"
+    "js_repl = false",
+    "plugins = false",
+    "remote_plugin = false",
+    "apps = false"
   );
   if (options.trustedWorkspace) {
     lines.push(
@@ -61,6 +84,22 @@ export function renderProviderConfig(
       `[projects.${tomlString(options.trustedWorkspace.toLowerCase())}]`,
       'trust_level = "trusted"'
     );
+  }
+  for (const [name, server] of Object.entries(options.mcpServers ?? {}).sort(([left], [right]) => left.localeCompare(right))) {
+    lines.push("", `[mcp_servers.${tomlString(name)}]`);
+    if ("url" in server) {
+      lines.push(`url = ${tomlString(server.url)}`);
+    } else {
+      lines.push(`command = ${tomlString(server.command)}`);
+      if (server.args?.length) lines.push(`args = ${tomlStringArray(server.args)}`);
+      if (server.cwd) lines.push(`cwd = ${tomlString(server.cwd)}`);
+    }
+    if (server.startupTimeoutSec !== undefined) lines.push(`startup_timeout_sec = ${server.startupTimeoutSec}`);
+    if (server.toolTimeoutSec !== undefined) lines.push(`tool_timeout_sec = ${server.toolTimeoutSec}`);
+    if (server.defaultToolsApprovalMode) {
+      lines.push(`default_tools_approval_mode = ${tomlString(server.defaultToolsApprovalMode)}`);
+    }
+    if (server.required !== undefined) lines.push(`required = ${server.required}`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -117,4 +156,8 @@ function readTomlString(source: string, key: string): string | undefined {
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
+}
+
+function tomlStringArray(values: string[]): string {
+  return `[${values.map(tomlString).join(", ")}]`;
 }

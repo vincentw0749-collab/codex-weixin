@@ -6,6 +6,7 @@ import open from "open";
 import { resolveStatePaths } from "../state/paths.js";
 import { AccountManager } from "./account-manager.js";
 import { initializeApiProfiles } from "./api-profile-bootstrap.js";
+import { startBrowserMcp, type BrowserMcpService } from "./browser-mcp.js";
 import { parseServerCommand, serverHelpText } from "./arguments.js";
 import { startLocalHttpServer } from "./http-server.js";
 import { acquireServiceProcessLock } from "./process-lock.js";
@@ -18,6 +19,7 @@ async function main(): Promise<void> {
   const processLock = acquireServiceProcessLock(paths.root);
   const accountManager = new AccountManager({ paths });
   let server: Awaited<ReturnType<typeof startLocalHttpServer>> | undefined;
+  let browserMcp: BrowserMcpService | undefined;
   let shuttingDown = false;
   let restartScheduled = false;
   const shutdown = async () => {
@@ -26,6 +28,7 @@ async function main(): Promise<void> {
     try {
       await accountManager.stopAll();
       await server?.close();
+      await browserMcp?.close();
     } finally {
       processLock.release();
     }
@@ -52,11 +55,15 @@ async function main(): Promise<void> {
     timer.unref();
   };
   try {
+    const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
+    browserMcp = await startBrowserMcp({ paths, packageRoot });
     const apiProfileManager = await initializeApiProfiles({
       paths,
       accountManager,
-      wrapperPath: fileURLToPath(new URL("../../scripts/codex-weixin-codex.mjs", import.meta.url))
+      wrapperPath: fileURLToPath(new URL("../../scripts/codex-weixin-codex.mjs", import.meta.url)),
+      browserMcpUrl: browserMcp.url
     });
+    accountManager.setApiProfileCommandService(apiProfileManager);
     server = await startLocalHttpServer({
       paths,
       accountManager,
@@ -68,6 +75,7 @@ async function main(): Promise<void> {
   } catch (error) {
     await accountManager.stopAll();
     await server?.close();
+    await browserMcp?.close();
     processLock.release();
     throw error;
   }

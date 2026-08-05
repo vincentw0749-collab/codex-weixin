@@ -8,6 +8,10 @@ test("prompt asks Codex to use native send actions for local media", () => {
 
   assert.match(prompt, /codex-weixin-actions/);
   assert.match(prompt, /do not use Markdown local file links/i);
+  assert.match(prompt, /configured Playwright MCP/i);
+  assert.match(prompt, /without asking for duplicate permission/i);
+  assert.match(prompt, /QR code or verification/i);
+  assert.match(prompt, /final report/i);
   assert.match(prompt, /video/i);
   assert.match(prompt, /send me a random video from desktop/);
 });
