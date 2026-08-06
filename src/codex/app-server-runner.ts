@@ -104,6 +104,8 @@ type WireMessage = {
   };
 };
 
+const DEFAULT_APP_SERVER_REQUEST_TIMEOUT_MS = 45_000;
+
 export class AppServerCodexRunner {
   private child?: ChildProcessWithoutNullStreams;
   private lines?: readline.Interface;
@@ -325,7 +327,7 @@ export class AppServerCodexRunner {
   private request(
     method: string,
     params: Record<string, unknown>,
-    timeoutMs = this.options.requestTimeoutMs
+    timeoutMs = this.options.requestTimeoutMs ?? DEFAULT_APP_SERVER_REQUEST_TIMEOUT_MS
   ): Promise<unknown> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {

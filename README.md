@@ -1,7 +1,7 @@
-<h1 align="center">codex-weixin</h1>
+<h1 align="center">Codex 微信 ClawBot</h1>
 
 <p align="center">
-  <img src="src/web/favicon.svg" alt="codex-weixin logo" width="128" height="128" />
+  <img src="src/web/favicon.svg" alt="Codex 微信 ClawBot logo" width="128" height="128" />
 </p>
 
 <p align="center">
@@ -102,7 +102,7 @@ codex-weixin
 也可以从源码安装：
 
 ```bash
-git clone https://github.com/XavierJiezou/codex-weixin.git
+git clone https://github.com/vincentw0749-collab/codex-weixin.git
 cd codex-weixin
 npm install
 npm run build
@@ -151,6 +151,8 @@ npm start
 /api set <编号或名称> <模型ID> <推理强度> 设置该 API 的默认模型和推理强度
 /api add <名称> <URL> [模型ID] [推理强度] 进入安全添加流程，下一条纯文本作为 API Key
 /api cancel                   取消等待输入 API Key
+/1                            检测到运行中任务时，中断任务并继续 API 切换
+/2                            检测到运行中任务时，取消 API 切换
 /bind <absolute-path>          绑定到允许列表内的工作目录
 /new                          创建新的受管 Codex 会话
 /resume                       查看历史会话、最近内容摘要和序号
@@ -221,6 +223,8 @@ IkunCoding 提供方会额外显示 `gpt-5.6-sol`、`gpt-5.6-terra` 和 `gpt-5.6
 ## 启动设置
 
 服务始终只绑定 `127.0.0.1`。可以通过环境变量改变端口、状态目录或关闭自动打开浏览器：
+
+Windows 管理页“设置”中的“开机自启”开关会创建或移除当前用户 Startup 目录中的 `Codex 微信 ClawBot.lnk`。启用时会自动迁移本项目旧的 `微信 Codex 管理台.lnk`，其他启动项不会被修改。
 
 ```text
 CODEX_WEIXIN_PORT=8787

@@ -55,8 +55,8 @@ test("does not expose arbitrary local errors to WeChat", () => {
   assert.match(message, /本机服务输出/);
 });
 
-test("identifies recoverable transport failures without exposing internal details", () => {
-  assert.equal(isUnclassifiedMessageHandlingError(new Error("unexpected bridge state")), true);
+test("identifies only explicit recoverable transport failures without exposing internal details", () => {
+  assert.equal(isUnclassifiedMessageHandlingError(new Error("unexpected bridge state")), false);
   assert.equal(
     isUnclassifiedMessageHandlingError(
       new Error("stream disconnected before completion: stream closed before response.completed")
@@ -70,6 +70,24 @@ test("identifies recoverable transport failures without exposing internal detail
   assert.equal(
     isUnclassifiedMessageHandlingError(
       new Error("app-server request thread/read timed out after 15000ms")
+    ),
+    true
+  );
+  assert.equal(
+    isUnclassifiedMessageHandlingError(
+      new Error("app-server request thread/start timed out after 45000ms")
+    ),
+    true
+  );
+  assert.equal(
+    isUnclassifiedMessageHandlingError(
+      new Error("Codex app-server exited with code 1")
+    ),
+    true
+  );
+  assert.equal(
+    isUnclassifiedMessageHandlingError(
+      new Error("Codex app-server stdio transport is not connected")
     ),
     true
   );

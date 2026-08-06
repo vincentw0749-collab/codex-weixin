@@ -14,6 +14,13 @@ if (!active?.encryptedApiKey) fail("No active API profile is configured");
 
 const apiKey = decryptWithDpapi(active.encryptedApiKey);
 const codexExe = findCodexExecutable();
+const noProxy = [...new Set([
+  ...(process.env.NO_PROXY ?? "").split(","),
+  ...(process.env.no_proxy ?? "").split(","),
+  "localhost",
+  "127.0.0.1",
+  "::1"
+].map((entry) => entry.trim()).filter(Boolean))].join(",");
 const child = spawn(codexExe, process.argv.slice(2), {
   stdio: "inherit",
   windowsHide: true,
@@ -21,7 +28,9 @@ const child = spawn(codexExe, process.argv.slice(2), {
     ...process.env,
     CODEX_HOME: codexHome,
     CODEX_SQLITE_HOME: sqliteHome,
-    CODEX_WEIXIN_PROVIDER_KEY: apiKey
+    CODEX_WEIXIN_PROVIDER_KEY: apiKey,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy
   }
 });
 

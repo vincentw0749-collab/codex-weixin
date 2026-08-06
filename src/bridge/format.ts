@@ -23,6 +23,15 @@ export const MISSING_FINAL_REPORT_PROMPT = [
   "这条汇报不能为空，不能只是过程消息，也不能只包含文件或图片发送动作。"
 ].join("\n");
 
+export const MAX_FINAL_REPORT_RECOVERY_ATTEMPTS = 3;
+
+export const MISSING_FINAL_REPORT_FALLBACK = [
+  "【本轮处理结果】",
+  "状态：无法确认",
+  `已处理：Codex 连续 ${MAX_FINAL_REPORT_RECOVERY_ATTEMPTS} 次未返回可读的最终汇报，已停止继续请求并释放会话。`,
+  "下一步：请重新发送任务；若此前可能已执行操作，请先要求它检查已有结果。"
+].join("\n");
+
 export function hasVisibleFinalReport(text: string): boolean {
   return text.trim().length > 0;
 }

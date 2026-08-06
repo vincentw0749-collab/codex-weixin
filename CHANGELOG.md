@@ -2,6 +2,17 @@
 
 All notable changes to `codex-weixin` are documented in this file.
 
+## [0.3.9] - 2026-08-06
+
+### Added
+
+- Added `/1` to interrupt active tasks and continue an API switch, and `/2` to cancel the switch.
+- Added a built-in Windows startup toggle that manages the Codex 微信 ClawBot shortcut.
+
+### Changed
+
+- Rebranded the management page as Codex 微信 ClawBot and pointed its GitHub link to the maintained user repository.
+
 ## [0.3.8] - 2026-07-20
 
 ### Fixed

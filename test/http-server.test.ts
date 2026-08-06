@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { AccountManager } from "../src/server/account-manager.js";
 import { checkCodex, startLocalHttpServer } from "../src/server/http-server.js";
+import type { StartupService } from "../src/server/startup.js";
 import { defaultConfig, saveConfig } from "../src/state/config.js";
 import { resolveStatePaths } from "../src/state/paths.js";
 import { saveAccount } from "../src/weixin/accounts.js";
@@ -18,6 +19,73 @@ test("Codex status probe reuses the runner command resolver", async () => {
     ready: true,
     version: "codex-cli windows-shim-test"
   });
+});
+
+test("startup status is exposed through the local API and startup changes require authentication", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-startup-http-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const paths = resolveStatePaths(root);
+  saveConfig(paths, defaultConfig(root));
+  let enabled = false;
+  const requested: boolean[] = [];
+  const startupService: StartupService = {
+    getStartupStatus: () => ({
+      supported: true,
+      enabled,
+      shortcutPath: "C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Codex 微信 ClawBot.lnk"
+    }),
+    setStartupEnabled: async (nextEnabled) => {
+      requested.push(nextEnabled);
+      enabled = nextEnabled;
+      return startupService.getStartupStatus();
+    }
+  };
+  const server = await startLocalHttpServer({
+    paths,
+    accountManager: new AccountManager({ paths }),
+    startupService,
+    codexCheck: async () => ({ ready: true }),
+    codexRuntimeCheck: async () => ({}),
+    codexModelsCheck: async () => [],
+    port: 0
+  });
+  t.after(() => server.close());
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Codex-Weixin-Token": server.requestToken,
+    Origin: server.url
+  };
+
+  const bootstrap = await (await fetch(`${server.url}/api/bootstrap`)).json() as { startup?: unknown };
+  assert.deepEqual(bootstrap.startup, startupService.getStartupStatus());
+  const status = await fetch(`${server.url}/api/startup`);
+  assert.equal(status.status, 200);
+  assert.deepEqual(await status.json(), startupService.getStartupStatus());
+
+  const unauthorized = await fetch(`${server.url}/api/startup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: true })
+  });
+  assert.equal(unauthorized.status, 403);
+  assert.deepEqual(requested, []);
+
+  const invalid = await fetch(`${server.url}/api/startup`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ enabled: "yes" })
+  });
+  assert.equal(invalid.status, 400);
+  assert.deepEqual(requested, []);
+
+  const updated = await fetch(`${server.url}/api/startup`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ enabled: true })
+  });
+  assert.equal(updated.status, 200);
+  assert.deepEqual(await updated.json(), startupService.getStartupStatus());
+  assert.deepEqual(requested, [true]);
 });
 
 test("account deletion passes the session-history retention choice", async (t) => {
@@ -120,7 +188,7 @@ test("local API redacts credentials and protects mutations", async (t) => {
     codexRuntime: { model: string; effort: string };
     codexModels: Array<{ model: string }>;
   };
-  assert.equal(bootstrap.product, "codex-weixin");
+  assert.equal(bootstrap.product, "Codex 微信 ClawBot");
   assert.equal(bootstrap.version, "9.8.7");
   assert.equal(bootstrap.accounts[0].token, undefined);
   assert.deepEqual(bootstrap.codex, { ready: true, version: "codex-cli test" });
@@ -133,15 +201,17 @@ test("local API redacts credentials and protects mutations", async (t) => {
   assert.match(pageHtml, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml">/);
   assert.match(
     pageHtml,
-    /href="https:\/\/github\.com\/XavierJiezou\/codex-weixin" target="_blank" rel="noopener noreferrer"/
+    /href="https:\/\/github\.com\/vincentw0749-collab\/codex-weixin" target="_blank" rel="noopener noreferrer"/
   );
   assert.match(pageHtml, /id="updateCheckButton"/);
+  assert.match(pageHtml, /id="startupToggleInput"/);
+  assert.match(pageHtml, /id="startupStatusText"/);
   assert.match(pageHtml, /id="removeAccountDialog"/);
   assert.match(pageHtml, /重新扫码后恢复/);
   const faviconResponse = await fetch(`${server.url}/favicon.svg`);
   assert.equal(faviconResponse.status, 200);
   assert.match(faviconResponse.headers.get("content-type") ?? "", /^image\/svg\+xml/);
-  assert.match(await faviconResponse.text(), /<title>codex-weixin<\/title>/);
+  assert.match(await faviconResponse.text(), /<title>Codex 微信 ClawBot<\/title>/);
 
   const updateResponse = await fetch(`${server.url}/api/update`);
   assert.deepEqual(await updateResponse.json(), {

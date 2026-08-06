@@ -42,6 +42,7 @@ test("imports the working API once and selects the profile-aware wrapper", async
     protector: new FakeProtector(),
     globalCodexHome,
     wrapperPath,
+    browserMcpUrl: "http://localhost:45678/mcp",
     fetch: async () => new Response(JSON.stringify({ id: "resp", output: [] }))
   });
   const second = await initializeApiProfiles({
@@ -50,6 +51,7 @@ test("imports the working API once and selects the profile-aware wrapper", async
     protector: new FakeProtector(),
     globalCodexHome,
     wrapperPath,
+    browserMcpUrl: "http://localhost:45678/mcp",
     fetch: async () => new Response(JSON.stringify({ id: "resp", output: [] }))
   });
 
@@ -59,5 +61,9 @@ test("imports the working API once and selects the profile-aware wrapper", async
   assert.equal(loadConfig(paths).model, "gpt-5.6-terra");
   assert.equal(loadConfig(paths).codexBin, wrapperPath);
   assert.equal(await fs.promises.readFile(paths.apiProfilesPath, "utf8").then((value) => value.includes("existing-key")), false);
-  assert.doesNotMatch(fs.readFileSync(path.join(paths.codexHomeDir, "config.toml"), "utf8"), /existing-key/);
+  const generatedConfig = fs.readFileSync(path.join(paths.codexHomeDir, "config.toml"), "utf8");
+  assert.doesNotMatch(generatedConfig, /existing-key/);
+  assert.match(generatedConfig, /\[mcp_servers\."playwright"\]/);
+  assert.match(generatedConfig, /url = "http:\/\/localhost:45678\/mcp"/);
+  assert.match(generatedConfig, /required = false/);
 });

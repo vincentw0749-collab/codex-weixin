@@ -16,6 +16,7 @@ import type { CodexModelOption, CodexRuntimeInfo } from "../codex/app-server-run
 import type { AccountManager, SessionAttachmentFile, SessionHistoryMessage, SessionUpload } from "./account-manager.js";
 import type { ApiProfileManager } from "./api-profile-manager.js";
 import { LoginManager } from "./login-manager.js";
+import { createStartupService, type StartupService } from "./startup.js";
 import { UpdateManager, type UpdateService } from "./update-manager.js";
 
 const bodySchema = z.record(z.string(), z.unknown());
@@ -57,6 +58,9 @@ const apiProfileUpdateSchema = z.object({
 const apiProfileActivationSchema = z.object({
   interruptActiveTasks: z.boolean().optional()
 });
+const startupSchema = z.object({
+  enabled: z.boolean()
+});
 const MAX_WEB_UPLOAD_FILES = 10;
 const MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
 
@@ -80,6 +84,7 @@ export type LocalHttpServerOptions = {
   codexRuntimeCheck?: () => Promise<CodexRuntimeInfo>;
   codexModelsCheck?: () => Promise<CodexModelOption[]>;
   updateService?: UpdateService;
+  startupService?: StartupService;
   onUpdateInstalled?: (version: string) => void;
 };
 
@@ -97,6 +102,7 @@ export async function startLocalHttpServer(options: LocalHttpServerOptions): Pro
     accountManager: options.accountManager
   });
   const updateService = options.updateService ?? new UpdateManager({ currentVersion: productVersion });
+  const startupService = options.startupService ?? createStartupService();
   let actualPort = options.port ?? 8787;
   const server = http.createServer((request, response) => {
     void handleRequest(request, response, {
@@ -105,6 +111,7 @@ export async function startLocalHttpServer(options: LocalHttpServerOptions): Pro
       productVersion,
       requestToken,
       updateService,
+      startupService,
       port: actualPort
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -139,6 +146,7 @@ type HandlerContext = LocalHttpServerOptions & {
   productVersion: string;
   requestToken: string;
   updateService: UpdateService;
+  startupService: StartupService;
   port: number;
 };
 
@@ -163,24 +171,35 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
 
   if (method === "GET" && url.pathname === "/api/bootstrap") {
     const config = loadConfig(context.paths);
-    const [codex, codexRuntime, codexModels] = await Promise.all([
+    const [codex, codexRuntime, codexModels, startup] = await Promise.all([
       (context.codexCheck ?? (() => checkCodex(config.codexBin)))(),
       readCodexRuntime(context),
-      readCodexModels(context)
+      readCodexModels(context),
+      context.startupService.getStartupStatus()
     ]);
     sendJson(response, 200, {
-      product: "codex-weixin",
+      product: "Codex 微信 ClawBot",
       version: context.productVersion,
       requestToken: context.requestToken,
       config,
       codex,
       codexRuntime,
       codexModels,
+      startup,
       apiProfiles: context.apiProfileManager?.list() ?? [],
       activeApiProfileId: context.apiProfileManager?.getActive()?.id,
       accounts: context.accountManager.listAccounts(),
       sessions: context.accountManager.listSessions()
     });
+    return;
+  }
+  if (method === "GET" && url.pathname === "/api/startup") {
+    sendJson(response, 200, context.startupService.getStartupStatus());
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/startup") {
+    const body = startupSchema.parse(await readJsonBody(request));
+    sendJson(response, 200, await context.startupService.setStartupEnabled(body.enabled));
     return;
   }
   if (method === "GET" && url.pathname === "/api/update") {

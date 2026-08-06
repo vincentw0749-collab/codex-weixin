@@ -17,11 +17,11 @@ export async function initializeApiProfiles(options: {
   paths: StatePaths;
   accountManager: AccountManager;
   wrapperPath: string;
+  browserMcpUrl?: string;
   protector?: SecretProtector;
   globalCodexHome?: string;
   env?: NodeJS.ProcessEnv;
   fetch?: typeof globalThis.fetch;
-  browserMcpUrl?: string;
 }): Promise<ApiProfileManager> {
   const globalCodexHome = options.globalCodexHome ?? path.join(os.homedir(), ".codex");
   const dedicatedConfigPath = path.join(options.paths.codexHomeDir, "config.toml");
@@ -41,15 +41,17 @@ export async function initializeApiProfiles(options: {
       instructionsFile: path.join(packageRoot, "resources", "codex-weixin-instructions.md"),
       reasoningEffort: config.effort ?? existingProviderOptions.reasoningEffort ?? "medium",
       trustedWorkspace: config.defaultCwd,
-      mcpServers: {
-        playwright: {
-          url: options.browserMcpUrl ?? "http://localhost:8788/mcp",
-          startupTimeoutSec: 60,
-          toolTimeoutSec: 120,
-          defaultToolsApprovalMode: "approve" as const,
-          required: true
+      ...(options.browserMcpUrl ? {
+        mcpServers: {
+          playwright: {
+            url: options.browserMcpUrl,
+            startupTimeoutSec: 60,
+            toolTimeoutSec: 120,
+            defaultToolsApprovalMode: "approve" as const,
+            required: false
+          }
         }
-      }
+      } : {})
     };
   };
   const active = store.getActive();

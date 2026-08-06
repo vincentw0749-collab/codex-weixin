@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { BridgeService } from "../src/bridge/service.js";
-import { buildPrompt } from "../src/bridge/format.js";
+import { buildPrompt, MISSING_FINAL_REPORT_FALLBACK } from "../src/bridge/format.js";
 import { defaultConfig, MAX_INBOUND_BYTES } from "../src/state/config.js";
 import { resolveStatePaths } from "../src/state/paths.js";
 import { RuntimeStateStore } from "../src/state/runtime-state.js";
@@ -577,6 +577,8 @@ test("lists API profiles and includes API commands in help and status", async (t
 
   await send("help", "/help");
   assert.match(replies.at(-1) ?? "", /\/api add/);
+  assert.match(replies.at(-1) ?? "", /\/1/);
+  assert.match(replies.at(-1) ?? "", /\/2/);
   await send("unknown", "/does-not-exist");
   assert.match(replies.at(-1) ?? "", /\/help/);
 });
@@ -898,6 +900,118 @@ test("allows a pending API switch confirmation to be cancelled", async (t) => {
   assert.equal(activateCalls, 0);
   assert.match(replies.at(-2) ?? "", /已取消 API 切换/);
   assert.match(replies.at(-1) ?? "", /没有等待确认/);
+});
+
+test("confirms a pending API switch with /1 and interrupts active tasks", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-api-force-confirm-number-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const stateStore = new RuntimeStateStore(resolveStatePaths(path.join(tmpDir, "state")));
+  const replies: string[] = [];
+  const profiles = [
+    { id: "one", name: "Primary", baseUrl: "https://one.example/v1", model: "one", effort: "medium", hasApiKey: true, active: true, createdAt: "x", updatedAt: "x" },
+    { id: "two", name: "Backup", baseUrl: "https://two.example/v1", model: "two", effort: "max", hasApiKey: true, active: false, createdAt: "x", updatedAt: "x" }
+  ];
+  let deferred: (() => Promise<void>) | undefined;
+  const activations: Array<{ id: string; options?: unknown }> = [];
+  const service = new BridgeService({
+    config: { ...defaultConfig(tmpDir), allowedSenderIds: ["alice@im.wechat"] },
+    stateStore,
+    deferTask: (task) => { deferred = task; },
+    weixin: {
+      async sendTyping() {},
+      async sendText(input: { text: string }) {
+        replies.push(input.text);
+        return { messageId: "text-message" };
+      }
+    } as never,
+    apiProfiles: {
+      list: () => profiles,
+      listForDisplay: async () => profiles.map((profile) => ({ ...profile, apiKeyLastFour: "test" })),
+      getActive: () => profiles.find((profile) => profile.active),
+      getActiveTaskCount: () => 2,
+      async setDefaults() { return profiles[0]; },
+      async createVerified() { throw new Error("not used"); },
+      async test() { return { ok: true as const, latencyMs: 1 }; },
+      async activate(id: string, options?: unknown) {
+        activations.push({ id, options });
+        for (const profile of profiles) profile.active = profile.id === id;
+        return profiles[1];
+      }
+    } as never,
+    runner: { async run() { return { raw: "", text: "unexpected" }; }, async stop() {} } as never
+  });
+
+  const send = (id: string, text: string) => service.handleMessage({
+    id,
+    senderId: "alice@im.wechat",
+    contextToken: "ctx",
+    text,
+    raw: {}
+  });
+
+  await send("use", "/api use 2");
+  assert.match(replies.at(-1) ?? "", /\/1/);
+  assert.match(replies.at(-1) ?? "", /\/2/);
+
+  await send("confirm-number", "/1");
+  assert.ok(deferred);
+  await deferred();
+  assert.deepEqual(activations, [{ id: "two", options: { interruptActiveTasks: true } }]);
+});
+
+test("cancels a pending API switch with /2", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-api-force-cancel-number-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const stateStore = new RuntimeStateStore(resolveStatePaths(path.join(tmpDir, "state")));
+  const replies: string[] = [];
+  const profiles = [
+    { id: "one", name: "Primary", baseUrl: "https://one.example/v1", model: "one", effort: "medium", hasApiKey: true, active: true, createdAt: "x", updatedAt: "x" },
+    { id: "two", name: "Backup", baseUrl: "https://two.example/v1", model: "two", effort: "max", hasApiKey: true, active: false, createdAt: "x", updatedAt: "x" }
+  ];
+  let activateCalls = 0;
+  let deferred: (() => Promise<void>) | undefined;
+  const service = new BridgeService({
+    config: { ...defaultConfig(tmpDir), allowedSenderIds: ["alice@im.wechat"] },
+    stateStore,
+    deferTask: (task) => { deferred = task; },
+    weixin: {
+      async sendTyping() {},
+      async sendText(input: { text: string }) {
+        replies.push(input.text);
+        return { messageId: "text-message" };
+      }
+    } as never,
+    apiProfiles: {
+      list: () => profiles,
+      listForDisplay: async () => profiles.map((profile) => ({ ...profile, apiKeyLastFour: "test" })),
+      getActive: () => profiles[0],
+      getActiveTaskCount: () => 1,
+      async setDefaults() { return profiles[0]; },
+      async createVerified() { throw new Error("not used"); },
+      async test() { return { ok: true as const, latencyMs: 1 }; },
+      async activate() {
+        activateCalls += 1;
+        return profiles[1];
+      }
+    } as never,
+    runner: { async run() { return { raw: "", text: "unexpected" }; }, async stop() {} } as never
+  });
+
+  const send = (id: string, text: string) => service.handleMessage({
+    id,
+    senderId: "alice@im.wechat",
+    contextToken: "ctx",
+    text,
+    raw: {}
+  });
+
+  await send("use", "/api use 2");
+  await send("cancel-number", "/2");
+  await send("confirm-after-cancel", "/api confirm");
+
+  assert.equal(activateCalls, 0);
+  assert.equal(deferred, undefined);
+  assert.doesNotMatch(replies.at(-1) ?? "", /无法识别|help/iu);
 });
 
 test("asks for confirmation before active API defaults interrupt tasks", async (t) => {
@@ -1744,7 +1858,52 @@ test("continues a WeChat turn until Codex provides a visible final report", asyn
   assert.deepEqual(replies, [finalReport]);
 });
 
-test("automatically resumes an unclassified failed turn up to ten times", async (t) => {
+test("ends a WeChat turn after bounded missing-final-report recovery attempts", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-missing-terminal-report-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const stateStore = new RuntimeStateStore(resolveStatePaths(path.join(tmpDir, "state")));
+  const replies: string[] = [];
+  const typingStates: boolean[] = [];
+  let runs = 0;
+  const service = new BridgeService({
+    config: {
+      ...defaultConfig(tmpDir),
+      allowedSenderIds: ["alice@im.wechat"]
+    },
+    stateStore,
+    retryDelay: async () => {},
+    weixin: {
+      async sendTyping(input: { typing: boolean }) {
+        typingStates.push(input.typing);
+      },
+      async sendText(input: { text: string }) {
+        replies.push(input.text);
+        return { messageId: `text-${replies.length}` };
+      }
+    } as never,
+    runner: {
+      async run() {
+        runs += 1;
+        return { raw: "", text: "", threadId: "thread-missing-terminal-report" };
+      },
+      async stop() {}
+    } as never
+  });
+
+  await service.handleMessage({
+    id: "missing-terminal-report",
+    senderId: "alice@im.wechat",
+    contextToken: "ctx",
+    text: "完成后告诉我结果",
+    raw: {}
+  });
+
+  assert.equal(runs, 4);
+  assert.deepEqual(replies, [MISSING_FINAL_REPORT_FALLBACK]);
+  assert.deepEqual(typingStates, [true, false]);
+});
+
+test("automatically resumes a recoverable failed turn up to ten times", async (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-unclassified-retry-"));
   t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
   const stateStore = new RuntimeStateStore(resolveStatePaths(path.join(tmpDir, "state")));
@@ -1775,10 +1934,10 @@ test("automatically resumes an unclassified failed turn up to ten times", async 
         calls += 1;
         if (calls === 1) {
           input.onThreadStarted?.("thread-resumed");
-          throw new Error("unexpected bridge state");
+          throw new Error("stream disconnected before completion: stream closed before response.completed");
         }
         if (calls === 2) {
-          throw new Error("unexpected bridge state");
+          throw new Error("stream disconnected before completion: stream closed before response.completed");
         }
         return { raw: "", text: "恢复完成", threadId: input.threadId };
       },
@@ -1801,7 +1960,7 @@ test("automatically resumes an unclassified failed turn up to ten times", async 
   assert.deepEqual(replies, ["恢复完成"]);
 });
 
-test("keeps recovering an unclassified turn beyond twenty attempts", async (t) => {
+test("keeps recovering a transient turn through twenty retries", async (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-unclassified-retry-unbounded-"));
   t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
   const stateStore = new RuntimeStateStore(resolveStatePaths(path.join(tmpDir, "state")));
@@ -1825,7 +1984,7 @@ test("keeps recovering an unclassified turn beyond twenty attempts", async (t) =
       async run() {
         calls += 1;
         if (calls <= 20) {
-          throw new Error("unexpected bridge state");
+          throw new Error("stream disconnected before completion: stream closed before response.completed");
         }
         return { raw: "", text: "恢复完成" };
       },
@@ -1843,6 +2002,51 @@ test("keeps recovering an unclassified turn beyond twenty attempts", async (t) =
 
   assert.equal(calls, 21);
   assert.deepEqual(replies, ["恢复完成"]);
+});
+
+test("ends a persistently disconnected turn after twenty retries", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-retry-limit-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const stateStore = new RuntimeStateStore(resolveStatePaths(path.join(tmpDir, "state")));
+  let calls = 0;
+  const service = new BridgeService({
+    config: {
+      ...defaultConfig(tmpDir),
+      allowedSenderIds: ["alice@im.wechat"]
+    },
+    stateStore,
+    weixin: {
+      async sendTyping() {},
+      async sendText() {
+        return { messageId: "text" };
+      }
+    } as never,
+    retryDelay: async () => {
+      if (calls > 20) {
+        throw new Error("retry test guard");
+      }
+    },
+    runner: {
+      async run() {
+        calls += 1;
+        throw new Error("stream disconnected before completion: stream closed before response.completed");
+      },
+      async stop() {}
+    } as never
+  });
+
+  await assert.rejects(
+    service.handleMessage({
+      id: "retry-limit",
+      senderId: "alice@im.wechat",
+      contextToken: "ctx",
+      text: "finish this task",
+      raw: {}
+    }),
+    /stream disconnected before completion/
+  );
+
+  assert.equal(calls, 21);
 });
 
 test("continues a turn after the app-server stream closes before response.completed", async (t) => {

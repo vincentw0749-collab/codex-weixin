@@ -8,6 +8,8 @@ import {
   buildPromptPreview,
   chunkText,
   hasVisibleFinalReport,
+  MAX_FINAL_REPORT_RECOVERY_ATTEMPTS,
+  MISSING_FINAL_REPORT_FALLBACK,
   MISSING_FINAL_REPORT_PROMPT,
   parsePrompt
 } from "./format.js";
@@ -105,6 +107,7 @@ type PendingApiProfileOperationInput =
 const API_KEY_WAIT_MS = 2 * 60_000;
 const API_SWITCH_CONFIRM_WAIT_MS = 2 * 60_000;
 const RUNNER_STOP_TIMEOUT_MS = 5_000;
+const MAX_RECOVERABLE_TURN_RETRIES = 20;
 
 export class BridgeService {
   private access: AccessController;
@@ -168,7 +171,7 @@ export class BridgeService {
     const pendingApiOperation = this.pendingApiProfileOperations.get(message.senderId);
     if (pendingApiOperation && Date.now() >= pendingApiOperation.expiresAt) {
       this.pendingApiProfileOperations.delete(message.senderId);
-    } else if (pendingApiOperation && !command) {
+    } else if (pendingApiOperation) {
       if (isDirectApiSwitchConfirmation(message.text)) {
         await this.confirmPendingApiProfileOperation(message.senderId);
         return;
@@ -325,7 +328,7 @@ export class BridgeService {
     }
     lines.push(
       "切换：/api 2、/api use 2 或 /api use <名称>",
-      "强制切换确认：检测到执行中任务时，发送 /api confirm",
+      "强制切换确认：检测到执行中任务时，发送 /1 中断并切换，/2 取消（兼容 /api confirm、/api cancel）",
       "测试：/api test 2",
       "添加：/api add <名称> <Base URL> [模型ID]",
       "取消密钥输入：/api cancel"
@@ -559,7 +562,8 @@ export class BridgeService {
     await this.reply(senderId, [
       `检测到 ${activeTaskCount} 个正在执行的任务。`,
       "直接切换会结束这些任务，且无法恢复。",
-      "发送 /api confirm 继续；发送 /api cancel 取消切换。"
+      "发送 /1 中断任务并继续切换；发送 /2 取消切换。",
+      "也可发送 /api confirm 或 /api cancel，或直接发送“确认切换”/“取消”。"
     ].join("\n"));
     return true;
   }
@@ -959,7 +963,19 @@ export class BridgeService {
         }
         retryAttempt += 1;
         threadId = this.options.stateStore.getThread(input.senderId) ?? threadId;
-        console.warn(`[codex-weixin] recoverable turn failure for ${input.senderId}; retrying attempt ${retryAttempt}`);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (retryAttempt > MAX_RECOVERABLE_TURN_RETRIES) {
+          console.error(
+            `[codex-weixin] recoverable turn failed after ${MAX_RECOVERABLE_TURN_RETRIES} retries for ${input.senderId}; `
+            + `thread=${threadId ?? "(new)"}; error=${errorMessage}`
+          );
+          throw error;
+        }
+        console.warn(
+          `[codex-weixin] recoverable turn failure for ${input.senderId}; `
+          + `retrying attempt ${retryAttempt}/${MAX_RECOVERABLE_TURN_RETRIES}; `
+          + `thread=${threadId ?? "(new)"}; error=${errorMessage}`
+        );
         await this.waitBeforeUnclassifiedRetry(retryAttempt, error);
         if (input.isCancelled()) {
           throw error;
@@ -995,6 +1011,16 @@ export class BridgeService {
       }
       if (input.isCancelled()) {
         return { result, pendingSendActions: [...pendingSendActions.values()] };
+      }
+      if (reportRetryAttempt >= MAX_FINAL_REPORT_RECOVERY_ATTEMPTS) {
+        console.error(
+          `[codex-weixin] turn for ${input.senderId} did not provide a visible final report after `
+          + `${MAX_FINAL_REPORT_RECOVERY_ATTEMPTS} recovery attempts; ending the turn`
+        );
+        return {
+          result: { ...result, text: MISSING_FINAL_REPORT_FALLBACK },
+          pendingSendActions: [...pendingSendActions.values()]
+        };
       }
       reportRetryAttempt += 1;
       const threadId = result.threadId ?? this.options.stateStore.getThread(input.senderId) ?? input.threadId;
@@ -1231,11 +1257,13 @@ function helpText(): string {
     "/status - 查看当前 API、模型、推理强度和会话状态",
     "/api - 查看已保存 API 和当前使用项",
     "/api <编号或名称> - 测试并切换 API",
-    "/api confirm - 确认结束执行中任务并切换 API",
+    "/1 - API 切换确认时，中断执行中任务并继续切换",
+    "/2 - API 切换确认时，取消切换并保留当前任务",
+    "/api confirm - 确认结束执行中任务并切换 API（兼容 /1）",
     "/api test <编号或名称> - 只测试 API，不切换",
     "/api set <编号或名称> <模型ID> <推理强度> - 设置 API 默认值",
     "/api add <名称> <Base URL> [模型ID] - 安全添加 API",
-    "/api cancel - 取消等待输入 API Key 或待确认的 API 切换",
+    "/api cancel - 取消等待输入 API Key 或待确认的 API 切换（兼容 /2）",
     "/bind <绝对路径> - 绑定工作目录",
     "/new - 创建新的 Codex 会话",
     "/resume [R编号] - 查看或切换历史会话",
@@ -1258,11 +1286,11 @@ function selectApiProfile(profiles: ApiProfileSummary[], selector: string): ApiP
 }
 
 function isDirectApiSwitchConfirmation(input: string): boolean {
-  return /^(直接切换|确认切换|确认)$/u.test(input.trim());
+  return /^(\/1|直接切换|确认切换|确认)$/u.test(input.trim());
 }
 
 function isDirectApiSwitchCancellation(input: string): boolean {
-  return /^(取消|不切换)$/u.test(input.trim());
+  return /^(\/2|取消|不切换)$/u.test(input.trim());
 }
 
 function apiProfileErrorText(error: unknown): string {

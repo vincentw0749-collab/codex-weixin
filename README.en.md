@@ -1,7 +1,7 @@
-<h1 align="center">codex-weixin</h1>
+<h1 align="center">Codex 微信 ClawBot</h1>
 
 <p align="center">
-  <img src="src/web/favicon.svg" alt="codex-weixin logo" width="128" height="128" />
+  <img src="src/web/favicon.svg" alt="Codex 微信 ClawBot logo" width="128" height="128" />
 </p>
 
 <p align="center">
@@ -70,7 +70,7 @@ codex-weixin
 Or install from source:
 
 ```bash
-git clone https://github.com/XavierJiezou/codex-weixin.git
+git clone https://github.com/vincentw0749-collab/codex-weixin.git
 cd codex-weixin
 npm install
 npm run build
@@ -182,6 +182,8 @@ Do not commit or share this directory. The management API never returns WeChat t
 ## Startup settings
 
 The server always binds to `127.0.0.1`. Environment variables can change its port and state directory or disable automatic browser opening:
+
+On Windows, the **开机自启** toggle in Settings creates or removes `Codex 微信 ClawBot.lnk` in the current user's Startup folder. Enabling it migrates the project's legacy `微信 Codex 管理台.lnk` and leaves unrelated startup entries untouched.
 
 ```text
 CODEX_WEIXIN_PORT=8787

@@ -7,6 +7,8 @@ import {
   buildPrompt,
   buildPromptPreview,
   hasVisibleFinalReport,
+  MAX_FINAL_REPORT_RECOVERY_ATTEMPTS,
+  MISSING_FINAL_REPORT_FALLBACK,
   MISSING_FINAL_REPORT_PROMPT,
   parsePrompt
 } from "../bridge/format.js";
@@ -516,6 +518,14 @@ export class AccountManager {
         if (hasVisibleFinalReport(parsed.visibleText)) break;
         for (const action of parsed.actions.send) {
           pendingSendActions.set(action.path.toLowerCase(), action);
+        }
+        if (reportRetryAttempt >= MAX_FINAL_REPORT_RECOVERY_ATTEMPTS) {
+          console.error(
+            `[codex-weixin] Web turn ${session.id} did not provide a visible final report after `
+            + `${MAX_FINAL_REPORT_RECOVERY_ATTEMPTS} recovery attempts; ending the turn`
+          );
+          result = { ...result, text: MISSING_FINAL_REPORT_FALLBACK };
+          break;
         }
         reportRetryAttempt += 1;
         const threadId = result.threadId ?? control.threadId ?? session.threadId;

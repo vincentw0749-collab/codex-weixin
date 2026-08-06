@@ -7,6 +7,8 @@ const state = {
   codex: null,
   codexRuntime: null,
   codexModels: [],
+  startup: null,
+  startupChanging: false,
   apiProfiles: [],
   activeApiProfileId: "",
   editingApiProfileId: "",
@@ -72,6 +74,8 @@ document.addEventListener("DOMContentLoaded", () => {
     updateNowButton: document.querySelector("#updateNowButton"),
     updateCheckButton: document.querySelector("#updateCheckButton"),
     settingsVersionValue: document.querySelector("#settingsVersionValue"),
+    startupToggleInput: document.querySelector("#startupToggleInput"),
+    startupStatusText: document.querySelector("#startupStatusText"),
     apiProfilesList: document.querySelector("#apiProfilesList"),
     apiProfileDialog: document.querySelector("#apiProfileDialog"),
     apiProfileDeleteDialog: document.querySelector("#apiProfileDeleteDialog"),
@@ -122,6 +126,7 @@ function bindEvents() {
   els.updateLaterButton.addEventListener("click", dismissUpdate);
   els.updateNowButton.addEventListener("click", () => void installUpdate());
   els.updateCheckButton.addEventListener("click", () => void checkForUpdateNow());
+  els.startupToggleInput.addEventListener("change", () => void saveStartupSetting());
   els.updateDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     if (!state.updateInstalling) dismissUpdate();
@@ -140,6 +145,7 @@ async function bootstrap() {
     state.codex = data.codex;
     state.codexRuntime = data.codexRuntime;
     state.codexModels = data.codexModels || [];
+    state.startup = data.startup || { supported: false, enabled: false };
     state.apiProfiles = data.apiProfiles || [];
     state.activeApiProfileId = data.activeApiProfileId || "";
     renderAll();
@@ -149,7 +155,7 @@ async function bootstrap() {
     window.setInterval(() => void checkForUpdate(), UPDATE_CHECK_INTERVAL_MS);
   } catch (error) {
     toast(error.message, true);
-    els.accountsList.innerHTML = emptyState("server-off", "无法连接本机服务", "请重新启动 codex-weixin");
+    els.accountsList.innerHTML = emptyState("server-off", "无法连接本机服务", "请重新启动 Codex 微信 ClawBot");
   }
 }
 
@@ -233,7 +239,7 @@ async function installUpdate() {
     state.updateInfo = { ...state.updateInfo, latestVersion: targetVersion, registry: result.registry };
     els.updateLatestVersion.textContent = `v${String(targetVersion).replace(/^v/i, "")}`;
     if (!result.restarting) {
-      throw new Error("更新已安装，但自动重启未启动，请手动重启 codex-weixin");
+      throw new Error("更新已安装，但自动重启未启动，请手动重启 Codex 微信 ClawBot");
     }
     setUpdateProgress(
       "正在重启服务",
@@ -272,7 +278,7 @@ async function waitForUpdatedService(targetVersion, previousToken) {
     }
     await delay(900);
   }
-  throw new Error("新版本已安装，但服务未能自动恢复，请手动重启 codex-weixin");
+  throw new Error("新版本已安装，但服务未能自动恢复，请手动重启 Codex 微信 ClawBot");
 }
 
 function resetUpdateDialog() {
@@ -498,6 +504,7 @@ function renderSessions() {
 function renderSettings() {
   if (!state.config) return;
   renderApiProfiles();
+  renderStartupSetting();
   document.querySelector("#defaultCwdInput").value = state.config.defaultCwd || "";
   document.querySelector("#allowedWorkspacesInput").value = (state.config.allowedWorkspaces || []).join("\n");
   document.querySelector("#backendInput").value = state.config.codexBackend || "auto";
@@ -506,6 +513,41 @@ function renderSettings() {
   renderModelOptions();
   document.querySelector("#effectiveModelValue").textContent = state.codexRuntime?.model || state.config.model || "Codex 默认";
   document.querySelector("#effectiveEffortValue").textContent = state.codexRuntime?.effort || state.config.effort || "Codex 默认";
+}
+
+function renderStartupSetting() {
+  const startup = state.startup || { supported: false, enabled: false };
+  const supported = startup.supported === true;
+  els.startupToggleInput.checked = supported && startup.enabled === true;
+  els.startupToggleInput.disabled = !supported || state.startupChanging;
+  els.startupStatusText.textContent = !supported
+    ? "当前服务版本不支持"
+    : state.startupChanging
+      ? "正在保存"
+      : startup.enabled
+        ? "已启用"
+        : "未启用";
+}
+
+async function saveStartupSetting() {
+  const previous = state.startup;
+  if (!previous?.supported || state.startupChanging) {
+    renderStartupSetting();
+    return;
+  }
+  const enabled = els.startupToggleInput.checked;
+  state.startupChanging = true;
+  renderStartupSetting();
+  try {
+    state.startup = await api("/api/startup", { method: "POST", body: { enabled } });
+    toast(enabled ? "已开启开机自启" : "已关闭开机自启");
+  } catch (error) {
+    state.startup = previous;
+    toast(error.message, true);
+  } finally {
+    state.startupChanging = false;
+    renderStartupSetting();
+  }
 }
 
 function renderApiProfiles() {

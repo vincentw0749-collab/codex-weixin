@@ -44,9 +44,9 @@ export function userFacingMessageHandlingError(
 export function isUnclassifiedMessageHandlingError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   if (
-    /stream disconnected before completion|stream closed before response\.completed|app-server turn stream became unresponsive|app-server request thread\/read timed out|\b429\b|rate limit|quota|\b502\b|\b503\b|\b504\b|bad gateway|service unavailable|selected model is at capacity|model (?:is )?(?:at )?capacity|capacity exceeded|temporarily overloaded|model.*overloaded|fetch failed|econnreset|econnrefused|enotfound|socket hang up/i.test(message)
+    /stream disconnected before completion|stream closed before response\.completed|app-server turn stream became unresponsive|app-server request [^\s]+ timed out|codex app-server exited with code|codex app-server stdio transport is not connected|\b429\b|rate limit|quota|\b502\b|\b503\b|\b504\b|bad gateway|service unavailable|selected model is at capacity|model (?:is )?(?:at )?capacity|capacity exceeded|temporarily overloaded|model.*overloaded|fetch failed|econnreset|econnrefused|enotfound|socket hang up/i.test(message)
   ) {
     return true;
   }
-  return userFacingMessageHandlingError(error) === UNCLASSIFIED_ERROR_MESSAGE;
+  return false;
 }

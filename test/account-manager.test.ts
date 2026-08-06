@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { buildPrompt } from "../src/bridge/format.js";
+import { buildPrompt, MISSING_FINAL_REPORT_FALLBACK } from "../src/bridge/format.js";
 import { AccountManager } from "../src/server/account-manager.js";
 import { defaultConfig } from "../src/state/config.js";
 import { accountStatePaths, resolveStatePaths } from "../src/state/paths.js";
@@ -523,6 +523,17 @@ test("continues a Web session until Codex provides a visible final report", asyn
     size: 6,
     available: true
   }]);
+});
+
+test("ends a Web session after bounded missing-final-report recovery attempts", async (t) => {
+  const { manager, root, runs, setRunHandler } = setup(t);
+  const session = manager.createSession("account-one", "alice@im.wechat", root, "Web missing report");
+  setRunHandler(async () => ({ raw: "", text: "", threadId: "thread-web-missing-report" }));
+
+  const result = await manager.continueSession("account-one", session.id, "完成后给我结果");
+
+  assert.equal(runs.length, 4);
+  assert.equal(result.message.text, MISSING_FINAL_REPORT_FALLBACK);
 });
 
 test("uses WeChat session model overrides when continuing the same session from Web", async (t) => {

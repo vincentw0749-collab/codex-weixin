@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>codex-weixin</title>
+  <title>Codex 微信 ClawBot</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
   <script defer src="/vendor/lucide.min.js"></script>
@@ -15,13 +15,13 @@
 <body>
   <header class="app-header">
     <div class="header-inner">
-      <a class="brand" href="#accounts" aria-label="codex-weixin 首页">
+      <a class="brand" href="#accounts" aria-label="Codex 微信 ClawBot 首页">
         <span class="brand-mark" aria-hidden="true">
           <i data-lucide="terminal-square"></i>
           <i data-lucide="message-circle"></i>
         </span>
-        <span class="brand-name">codex-weixin</span>
-        <span class="brand-version" id="productVersion" aria-label="codex-weixin 版本" hidden></span>
+        <span class="brand-name">Codex 微信 ClawBot</span>
+        <span class="brand-version" id="productVersion" aria-label="Codex 微信 ClawBot 版本" hidden></span>
       </a>
       <nav class="view-tabs" aria-label="管理视图">
         <button class="tab is-active" type="button" data-view="accounts">微信账号</button>
@@ -29,7 +29,7 @@
         <button class="tab" type="button" data-view="settings">设置</button>
       </nav>
       <div class="header-actions">
-        <a class="icon-button github-link" href="https://github.com/XavierJiezou/codex-weixin" target="_blank" rel="noopener noreferrer" title="前往 GitHub" aria-label="前往 codex-weixin GitHub 仓库">
+        <a class="icon-button github-link" href="https://github.com/vincentw0749-collab/codex-weixin" target="_blank" rel="noopener noreferrer" title="前往 GitHub" aria-label="前往 Codex 微信 ClawBot GitHub 仓库">
           <i data-lucide="github"></i>
         </a>
         <button class="button button-primary header-action" id="addAccountButton" type="button" title="添加微信" aria-label="添加微信">
@@ -213,6 +213,19 @@
               </span>
             </label>
           </div>
+        </div>
+        <div class="settings-group">
+          <h2>启动</h2>
+          <label class="toggle-field startup-toggle-field" for="startupToggleInput">
+            <span class="startup-toggle-copy">
+              <strong>开机自启</strong>
+              <small id="startupStatusText">正在读取</small>
+            </span>
+            <span class="toggle-control">
+              <input id="startupToggleInput" type="checkbox">
+              <span aria-hidden="true"></span>
+            </span>
+          </label>
         </div>
         <div class="settings-group">
           <h2>版本</h2>
