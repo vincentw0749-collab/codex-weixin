@@ -1,6 +1,6 @@
 {
   "name": "codex-weixin",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "description": "Codex 微信 ClawBot: local multi-account WeChat bridge for OpenAI Codex.",
   "license": "MIT",
   "author": "Xuechao Zou",

@@ -2,6 +2,12 @@
 
 All notable changes to `codex-weixin` are documented in this file.
 
+## [0.3.10] - 2026-08-07
+
+### Fixed
+
+- Stopped retrying explicit upstream API failures such as `502`, `503`, `504`, `429`, and capacity errors as if they were stream disconnects. These failures now immediately return an actionable WeChat error, while actual transport disconnects retain the existing recovery retries.
+
 ## [0.3.9] - 2026-08-06
 
 ### Added

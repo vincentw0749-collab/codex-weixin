@@ -2049,6 +2049,47 @@ test("ends a persistently disconnected turn after twenty retries", async (t) => 
   assert.equal(calls, 21);
 });
 
+test("does not keep retrying when the active API returns 502", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-provider-502-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const stateStore = new RuntimeStateStore(resolveStatePaths(path.join(tmpDir, "state")));
+  let calls = 0;
+  const service = new BridgeService({
+    config: {
+      ...defaultConfig(tmpDir),
+      allowedSenderIds: ["alice@im.wechat"]
+    },
+    stateStore,
+    weixin: {
+      async sendTyping() {},
+      async sendText() {
+        return { messageId: "text" };
+      }
+    } as never,
+    retryDelay: async () => {},
+    runner: {
+      async run() {
+        calls += 1;
+        throw new Error("unexpected status 502 Bad Gateway: https://api.example/v1/responses");
+      },
+      async stop() {}
+    } as never
+  });
+
+  await assert.rejects(
+    service.handleMessage({
+      id: "provider-502",
+      senderId: "alice@im.wechat",
+      contextToken: "ctx",
+      text: "reply with one",
+      raw: {}
+    }),
+    /502 Bad Gateway/
+  );
+
+  assert.equal(calls, 1);
+});
+
 test("continues a turn after the app-server stream closes before response.completed", async (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-stream-recovery-"));
   t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));

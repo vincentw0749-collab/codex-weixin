@@ -55,7 +55,7 @@ test("does not expose arbitrary local errors to WeChat", () => {
   assert.match(message, /本机服务输出/);
 });
 
-test("identifies only explicit recoverable transport failures without exposing internal details", () => {
+test("retries only reconnectable transport failures, not explicit provider failures", () => {
   assert.equal(isUnclassifiedMessageHandlingError(new Error("unexpected bridge state")), false);
   assert.equal(
     isUnclassifiedMessageHandlingError(
@@ -63,10 +63,11 @@ test("identifies only explicit recoverable transport failures without exposing i
     ),
     true
   );
-  assert.equal(isUnclassifiedMessageHandlingError(new Error("unexpected status 503 Service Unavailable")), true);
+  assert.equal(isUnclassifiedMessageHandlingError(new Error("unexpected status 502 Bad Gateway")), false);
+  assert.equal(isUnclassifiedMessageHandlingError(new Error("unexpected status 503 Service Unavailable")), false);
   assert.equal(isUnclassifiedMessageHandlingError(new Error("socket hang up")), true);
-  assert.equal(isUnclassifiedMessageHandlingError(new Error("HTTP 429 rate limit")), true);
-  assert.equal(isUnclassifiedMessageHandlingError(new Error("selected model is at capacity")), true);
+  assert.equal(isUnclassifiedMessageHandlingError(new Error("HTTP 429 rate limit")), false);
+  assert.equal(isUnclassifiedMessageHandlingError(new Error("selected model is at capacity")), false);
   assert.equal(
     isUnclassifiedMessageHandlingError(
       new Error("app-server request thread/read timed out after 15000ms")
