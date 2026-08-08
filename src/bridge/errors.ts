@@ -50,3 +50,10 @@ export function isUnclassifiedMessageHandlingError(error: unknown): boolean {
   }
   return false;
 }
+
+/** Transient provider failures that can be retried by resuming the same thread. */
+export function isRecoverableMessageHandlingError(error: unknown): boolean {
+  if (isUnclassifiedMessageHandlingError(error)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(?:408|425|429|500|502|503|504)\b|bad gateway|service unavailable|rate limit|quota|temporarily overloaded|at capacity/i.test(message);
+}

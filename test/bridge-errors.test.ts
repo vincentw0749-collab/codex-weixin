@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isRecoverableMessageHandlingError,
   isUnclassifiedMessageHandlingError,
   userFacingMessageHandlingError
 } from "../src/bridge/errors.js";
@@ -92,4 +93,12 @@ test("retries only reconnectable transport failures, not explicit provider failu
     ),
     true
   );
+});
+
+test("classifies transient provider failures as recoverable", () => {
+  assert.equal(isRecoverableMessageHandlingError(new Error("unexpected status 502 Bad Gateway")), true);
+  assert.equal(isRecoverableMessageHandlingError(new Error("HTTP 503 Service Unavailable")), true);
+  assert.equal(isRecoverableMessageHandlingError(new Error("HTTP 429 rate limit")), true);
+  assert.equal(isRecoverableMessageHandlingError(new Error("401 Unauthorized")), false);
+  assert.equal(isRecoverableMessageHandlingError(new Error("invalid request schema")), false);
 });

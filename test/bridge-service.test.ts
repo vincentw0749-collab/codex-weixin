@@ -2049,11 +2049,13 @@ test("ends a persistently disconnected turn after twenty retries", async (t) => 
   assert.equal(calls, 21);
 });
 
-test("does not keep retrying when the active API returns 502", async (t) => {
+test("retries a transient 502 from the active API on the same thread", async (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-weixin-provider-502-"));
   t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
   const stateStore = new RuntimeStateStore(resolveStatePaths(path.join(tmpDir, "state")));
   let calls = 0;
+  const attempts: Array<{ prompt: string; threadId?: string }> = [];
+  const replies: string[] = [];
   const service = new BridgeService({
     config: {
       ...defaultConfig(tmpDir),
@@ -2062,32 +2064,38 @@ test("does not keep retrying when the active API returns 502", async (t) => {
     stateStore,
     weixin: {
       async sendTyping() {},
-      async sendText() {
+      async sendText(input: { text: string }) {
+        replies.push(input.text);
         return { messageId: "text" };
       }
     } as never,
     retryDelay: async () => {},
     runner: {
-      async run() {
+      async run(input: { prompt: string; threadId?: string; onThreadStarted?: (threadId: string) => void }) {
         calls += 1;
-        throw new Error("unexpected status 502 Bad Gateway: https://api.example/v1/responses");
+        attempts.push({ prompt: input.prompt, threadId: input.threadId });
+        if (calls === 1) {
+          input.onThreadStarted?.("thread-kki");
+          throw new Error("unexpected status 502 Bad Gateway: https://api.example/v1/responses");
+        }
+        return { raw: "", text: "KKI 重试后完成", threadId: input.threadId ?? "thread-kki" };
       },
       async stop() {}
     } as never
   });
 
-  await assert.rejects(
-    service.handleMessage({
-      id: "provider-502",
-      senderId: "alice@im.wechat",
-      contextToken: "ctx",
-      text: "reply with one",
-      raw: {}
-    }),
-    /502 Bad Gateway/
-  );
+  await service.handleMessage({
+    id: "provider-502",
+    senderId: "alice@im.wechat",
+    contextToken: "ctx",
+    text: "reply with one",
+    raw: {}
+  });
 
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
+  assert.equal(attempts[1]?.threadId, "thread-kki");
+  assert.match(attempts[1]?.prompt ?? "", /从当前会话继续完成上一轮任务/);
+  assert.deepEqual(replies, ["KKI 重试后完成"]);
 });
 
 test("continues a turn after the app-server stream closes before response.completed", async (t) => {

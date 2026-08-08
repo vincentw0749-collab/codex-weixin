@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { AccessController } from "./access.js";
 import { parseActionBlocks, type SendAction } from "./actions.js";
-import { isUnclassifiedMessageHandlingError } from "./errors.js";
+import { isRecoverableMessageHandlingError } from "./errors.js";
 import {
   buildPrompt,
   buildPromptPreview,
@@ -958,7 +958,7 @@ export class BridgeService {
           onProgress: input.onProgress
         });
       } catch (error) {
-        if (input.isCancelled() || !isUnclassifiedMessageHandlingError(error)) {
+        if (input.isCancelled() || !isRecoverableMessageHandlingError(error)) {
           throw error;
         }
         retryAttempt += 1;
