@@ -63,6 +63,74 @@ test("classifies ret=-2 sendmessage failures as stale context", async () => {
   );
 });
 
+test("retries sendmessage without an expired context token", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  let attempt = 0;
+  const client = new WeixinApiClient({
+    baseUrl: "https://ilink.example/",
+    token: "secret",
+    sendRetryDelayMs: 0,
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      attempt += 1;
+      if (attempt === 1) {
+        return new Response(JSON.stringify({ ret: -2 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ret: 0, message_id: "m2" }), { status: 200 });
+    }
+  });
+
+  const result = await client.sendText({ toUserId: "alice@im.wechat", text: "hello", contextToken: "expired" });
+
+  assert.equal(result.messageId, "m2");
+  assert.equal(calls.length, 2);
+  const firstBody = JSON.parse(String(calls[0].init.body));
+  const secondBody = JSON.parse(String(calls[1].init.body));
+  assert.equal(firstBody.msg.context_token, "expired");
+  assert.equal(secondBody.msg.context_token, undefined);
+  assert.equal(firstBody.msg.client_id, secondBody.msg.client_id);
+});
+
+test("retries transient outbound send failures with bounded attempts", async () => {
+  let attempt = 0;
+  const client = new WeixinApiClient({
+    baseUrl: "https://ilink.example/",
+    token: "secret",
+    sendRetryDelayMs: 0,
+    fetch: async () => {
+      attempt += 1;
+      if (attempt < 3) {
+        return new Response("upstream unavailable", { status: 503 });
+      }
+      return new Response(JSON.stringify({ ret: 0, message_id: "m3" }), { status: 200 });
+    }
+  });
+
+  const result = await client.sendText({ toUserId: "alice@im.wechat", text: "hello" });
+
+  assert.equal(result.messageId, "m3");
+  assert.equal(attempt, 3);
+});
+
+test("retries transient network failures while sending a reply", async () => {
+  let attempt = 0;
+  const client = new WeixinApiClient({
+    baseUrl: "https://ilink.example/",
+    token: "secret",
+    sendRetryDelayMs: 0,
+    fetch: async () => {
+      attempt += 1;
+      if (attempt === 1) throw new TypeError("fetch failed: socket hang up");
+      return new Response(JSON.stringify({ ret: 0, message_id: "m4" }), { status: 200 });
+    }
+  });
+
+  const result = await client.sendText({ toUserId: "alice@im.wechat", text: "hello" });
+
+  assert.equal(result.messageId, "m4");
+  assert.equal(attempt, 2);
+});
+
 test("builds getupdates requests with iLink cursor field", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const client = new WeixinApiClient({

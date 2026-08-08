@@ -7,6 +7,8 @@ export type WeixinApiClientOptions = {
   token: string;
   fetch?: FetchLike;
   requestTimeoutMs?: number;
+  sendRetryAttempts?: number;
+  sendRetryDelayMs?: number;
 };
 
 export class WeixinApiError extends Error {
@@ -47,20 +49,40 @@ export class WeixinApiClient {
     contextToken?: string;
   }): Promise<{ messageId: string }> {
     const clientId = crypto.randomUUID();
-    const body = {
-      msg: {
-        from_user_id: "",
-        to_user_id: input.toUserId,
-        client_id: clientId,
-        message_type: 2,
-        message_state: 2,
-        ...(input.contextToken ? { context_token: input.contextToken } : {}),
-        item_list: [{ type: 1, text_item: { text: input.text } }]
-      },
-      base_info: { channel_version: "0.1.0" }
-    };
-    const response = await this.post("ilink/bot/sendmessage", body);
-    return { messageId: String(response.message_id ?? response.msgid ?? clientId) };
+    const maxAttempts = Math.max(1, Math.floor(this.options.sendRetryAttempts ?? 3));
+    const retryDelayMs = Math.max(0, this.options.sendRetryDelayMs ?? 250);
+    let contextToken = input.contextToken;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const body = {
+        msg: {
+          from_user_id: "",
+          to_user_id: input.toUserId,
+          client_id: clientId,
+          message_type: 2,
+          message_state: 2,
+          ...(contextToken ? { context_token: contextToken } : {}),
+          item_list: [{ type: 1, text_item: { text: input.text } }]
+        },
+        base_info: { channel_version: "0.1.0" }
+      };
+
+      try {
+        const response = await this.post("ilink/bot/sendmessage", body);
+        return { messageId: String(response.message_id ?? response.msgid ?? clientId) };
+      } catch (error) {
+        if (isStaleContextError(error) && contextToken) {
+          contextToken = undefined;
+          continue;
+        }
+        if (attempt >= maxAttempts || !isRetryableSendError(error)) {
+          throw error;
+        }
+        await delay(retryDelayMs * attempt);
+      }
+    }
+
+    throw new Error("sendmessage retry loop exited unexpectedly");
   }
 
   async sendTyping(input: { toUserId: string; contextToken?: string; typing?: boolean }): Promise<void> {
@@ -245,6 +267,22 @@ export class WeixinApiClient {
     }
     return parsed;
   }
+}
+
+function isRetryableSendError(error: unknown): boolean {
+  if (error instanceof WeixinApiError) {
+    if (error.endpoint !== "sendmessage") return false;
+    if (error.ret !== undefined) {
+      return error.ret === -1 || error.ret === 429;
+    }
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /HTTP (408|425|429|5\d\d)\b|fetch failed|econnreset|econnrefused|enotfound|network|socket hang up|timeout/i.test(message);
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function shortEndpoint(endpoint: string): string {
