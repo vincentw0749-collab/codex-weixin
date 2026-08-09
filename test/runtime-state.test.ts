@@ -111,6 +111,21 @@ test("clears model and effort overrides across sessions when API defaults change
   assert.equal(store.getSession(second.id)?.effort, undefined);
 });
 
+test("clears thread ids across sessions while preserving session records", (t) => {
+  const store = createStore(t);
+  const first = store.createSession("alice@im.wechat", "/work/one", "First");
+  store.setThread("alice@im.wechat", "thread-old");
+  const second = store.createSession("bob@im.wechat", "/work/two", "Second");
+  store.activateSession(second.id);
+  store.setThread("bob@im.wechat", "thread-other");
+
+  store.clearAllThreadIds();
+
+  assert.equal(store.getSession(first.id)?.threadId, undefined);
+  assert.equal(store.getSession(second.id)?.threadId, undefined);
+  assert.equal(store.listSessions().length, 2);
+});
+
 test("updates model, effort, and streaming by managed session id for Web controls", (t) => {
   const store = createStore(t);
   const first = store.createSession("alice@im.wechat", "/work/one", "First");

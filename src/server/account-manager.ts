@@ -204,6 +204,7 @@ export class AccountManager {
   clearSessionRuntimeOverrides(): void {
     for (const entry of this.entries.values()) {
       entry.store?.clearModelAndEffortOverrides();
+      entry.store?.clearAllThreadIds();
     }
   }
 
