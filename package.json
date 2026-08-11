@@ -25,6 +25,7 @@
   },
   "files": [
     "dist/",
+    "scripts/codex-weixin-launcher.ps1",
     "resources/",
     "src/web/favicon.svg",
     "README.md",

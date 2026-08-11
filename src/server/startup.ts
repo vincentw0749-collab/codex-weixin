@@ -53,7 +53,7 @@ export class WindowsStartupService implements StartupService {
     this.startupDir = options.startupDir ?? resolveStartupDirectory(this.platform, this.env);
     this.launcherPath = options.launcherPath
       ?? this.env.CODEX_WEIXIN_LAUNCHER_PATH
-      ?? fileURLToPath(new URL("../../../codex-weixin-launcher.ps1", import.meta.url));
+      ?? fileURLToPath(new URL("../../scripts/codex-weixin-launcher.ps1", import.meta.url));
     this.fileSystem = options.fileSystem ?? fs;
     this.createShortcutImpl = options.createShortcut
       ?? ((shortcut) => createShortcutWithPowerShell(shortcut, this.env));
